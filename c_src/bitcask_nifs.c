@@ -146,6 +146,7 @@ typedef struct
     uint64_t offset;
     uint64_t epoch;
     uint32_t tstamp;
+    uint32_t tstamp_expiry;
     uint16_t key_sz;
     char     key[0];
 } bitcask_keydir_entry;
@@ -175,6 +176,7 @@ struct bitcask_keydir_entry_sib
     uint64_t offset;
     uint64_t epoch;
     uint32_t tstamp;
+    uint32_t tstamp_expiry;
     struct bitcask_keydir_entry_sib * next;
 };
 typedef struct bitcask_keydir_entry_sib bitcask_keydir_entry_sib;
@@ -201,6 +203,7 @@ typedef struct
     uint64_t epoch;
     uint64_t offset;
     uint32_t tstamp;
+    uint32_t tstamp_expiry;
     uint16_t is_tombstone;
     uint16_t key_sz;
     char *   key;
@@ -817,6 +820,7 @@ static int proxy_kd_entry_at_epoch(bitcask_keydir_entry* old,
         ret->total_sz = old->total_sz;
         ret->offset = old->offset;
         ret->tstamp = old->tstamp;
+        ret->tstamp_expiry = old->tstamp_expiry;
         ret->epoch = old->epoch;
         ret->key_sz = old->key_sz;
         ret->key = old->key;
@@ -848,6 +852,7 @@ static int proxy_kd_entry_at_epoch(bitcask_keydir_entry* old,
     ret->total_sz = s->total_sz;
     ret->offset = s->offset;
     ret->tstamp = s->tstamp;
+    ret->tstamp_expiry = s->tstamp_expiry;
     ret->is_tombstone = is_sib_tombstone(s);
     ret->epoch = s->epoch;
 
@@ -937,6 +942,7 @@ static void update_kd_entry_list(bitcask_keydir_entry *old,
         new_sib->offset = new->offset;
         new_sib->epoch = new->epoch;
         new_sib->tstamp = new->tstamp;
+        new_sib->tstamp_expiry = new->tstamp_expiry;
     }
     else // otherwise make a new sib
     {
@@ -947,6 +953,7 @@ static void update_kd_entry_list(bitcask_keydir_entry *old,
         new_sib->offset = new->offset;
         new_sib->epoch = new->epoch;
         new_sib->tstamp = new->tstamp;
+        new_sib->tstamp_expiry = new->tstamp_expiry;
         new_sib->next = h->sibs;
 
         h->sibs = new_sib;
@@ -973,6 +980,7 @@ static bitcask_keydir_entry* new_kd_entry_list(bitcask_keydir_entry *old,
     new_sib->offset = new->offset;
     new_sib->epoch = new->epoch;
     new_sib->tstamp = new->tstamp;
+    new_sib->tstamp_expiry = new->tstamp_expiry;
     new_sib->next = old_sib;
 
     //make new sib
@@ -980,7 +988,7 @@ static bitcask_keydir_entry* new_kd_entry_list(bitcask_keydir_entry *old,
     old_sib->total_sz = old->total_sz;
     old_sib->offset = old->offset;
     old_sib->epoch = old->epoch;
-    old_sib->tstamp = old->tstamp;
+    old_sib->tstamp_expiry = old->tstamp_expiry;
     old_sib->next = NULL;
 
     return MAKE_ENTRY_LIST_POINTER(ret);
@@ -1111,6 +1119,7 @@ static bitcask_keydir_entry* add_entry(bitcask_keydir* keydir,
     new_entry->offset = entry->offset;
     new_entry->epoch = entry->epoch;
     new_entry->tstamp = entry->tstamp;
+    new_entry->tstamp_expiry = entry->tstamp_expiry;
     new_entry->key_sz = entry->key_sz;
     memcpy(new_entry->key, entry->key, entry->key_sz);
     kh_put_set(entries, hash, new_entry);
@@ -1127,6 +1136,7 @@ static void update_regular_entry(bitcask_keydir_entry* cur_entry,
     cur_entry->epoch = upd_entry->epoch;
     cur_entry->offset = upd_entry->offset;
     cur_entry->tstamp = upd_entry->tstamp;
+    cur_entry->tstamp_expiry = upd_entry->tstamp_expiry;
 }
 
 // Updates an entry from the entries hash, not from pending.
@@ -1172,6 +1182,7 @@ static void update_entry(bitcask_keydir* keydir,
             new_entry->offset = upd_entry->offset;
             new_entry->epoch = upd_entry->epoch;
             new_entry->tstamp = upd_entry->tstamp;
+            new_entry->tstamp_expiry = upd_entry->tstamp_expiry;
             new_entry->key_sz = h->key_sz;
             memcpy(new_entry->key, h->key, h->key_sz);
             kh_key(keydir->entries, itr) = new_entry;
@@ -1272,6 +1283,7 @@ static void set_entry_tombstone(bitcask_keydir* keydir, khiter_t itr,
 {
     bitcask_keydir_entry_proxy tombstone;
     tombstone.tstamp = remove_time;
+    tombstone.tstamp_expiry = remove_time;
     tombstone.epoch = remove_epoch;
     tombstone.offset = MAX_OFFSET;
     tombstone.total_sz = MAX_SIZE;
@@ -1346,7 +1358,8 @@ ERL_NIF_TERM bitcask_nifs_keydir_put_int(ErlNifEnv* env, int argc, const ERL_NIF
         enif_get_uint(env, argv[6], &(nowsec)) &&
         enif_get_uint(env, argv[7], &(newest_put)) &&
         enif_get_uint(env, argv[8], &(old_file_id)) &&
-        enif_get_uint64_bin(env, argv[9], &(old_offset)))
+        enif_get_uint64_bin(env, argv[9], &(old_offset)) &&
+        enif_get_uint(env, argv[10], &(entry.tstamp_expiry)))
     {
         bitcask_keydir* keydir = handle->keydir;
         entry.key = (char*)key.data;
@@ -1538,13 +1551,14 @@ ERL_NIF_TERM bitcask_nifs_keydir_get_int(ErlNifEnv* env, int argc, const ERL_NIF
         if (f.found && !f.proxy.is_tombstone)
         {
             ERL_NIF_TERM result;
-            result = enif_make_tuple6(env,
+            result = enif_make_tuple7(env,
                                       ATOM_BITCASK_ENTRY,
                                       argv[1], /* Key */
                                       enif_make_uint(env, f.proxy.file_id),
                                       enif_make_uint(env, f.proxy.total_sz),
                                       enif_make_uint64_bin(env, f.proxy.offset),
-                                      enif_make_uint(env, f.proxy.tstamp));
+                                      enif_make_uint(env, f.proxy.tstamp),
+                                      enif_make_uint(env, f.proxy.tstamp_expiry));
             DEBUG(" ... returned value file id=%u size=%u ofs=%u tstamp=%u tomb=%u\r\n",
                   f.proxy.file_id, f.proxy.total_sz, f.proxy.offset, f.proxy.tstamp,
                   (unsigned)f.proxy.is_tombstone);
@@ -1947,13 +1961,14 @@ ERL_NIF_TERM bitcask_nifs_keydir_itr_next(ErlNifEnv* env, int argc, const ERL_NI
                 // TODO: If we maintained a ErlNifBinary in the original entry, could we
                 // get away with not doing a copy here?
                 memcpy(key.data, proxy.key, proxy.key_sz);
-                ERL_NIF_TERM curr = enif_make_tuple6(env,
+                ERL_NIF_TERM curr = enif_make_tuple7(env,
                                                      ATOM_BITCASK_ENTRY,
                                                      enif_make_binary(env, &key),
                                                      enif_make_uint(env, proxy.file_id),
                                                      enif_make_uint(env, proxy.total_sz),
                                                      enif_make_uint64_bin(env, proxy.offset),
-                                                     enif_make_uint(env, proxy.tstamp));
+                                                     enif_make_uint(env, proxy.tstamp),
+                                                     enif_make_uint(env, proxy.tstamp_expiry));
 
                 // Update the iterator to the next entry
                 (handle->iterator)++;

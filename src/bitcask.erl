@@ -26,6 +26,7 @@
          close_write_file/1,
          get/2,
          put/3,
+         put/4,
          delete/2,
          sync/1,
          list_keys/1,
@@ -283,6 +284,8 @@ get(Ref, Key, TryNum) ->
 
 %% @doc Store a key and value in a bitcase datastore.
 put(Ref, Key, Value) ->
+    put(Ref, Key, Value, noexpiry).
+put(Ref, Key, Value, TstampExpiry) ->
     #bc_state { write_file = WriteFile } = State = get_state(Ref),
 
     %% Make sure we have a file open to write
@@ -295,7 +298,7 @@ put(Ref, Key, Value) ->
     end,
 
     try
-        {Ret, State1} = do_put(Key, Value, State,
+        {Ret, State1} = do_put(Key, Value, TstampExpiry, State,
                                ?DIABOLIC_BIG_INT, undefined),
         put_state(Ref, State1),
         Ret
@@ -1715,9 +1718,9 @@ readable_and_setuid_files(Dirname) ->
 
 %% Internal put - have validated that the file is opened for write
 %% and looked up the state at this point
-do_put(_Key, _Value, State, 0, LastErr) ->
+do_put(_Key, _Value, _TstampExpiry, State, 0, LastErr) ->
     {{error, LastErr}, State};
-do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
+do_put(Key, Value, TstampExpiry, #bc_state{write_file = WriteFile} = State,
        Retries, _LastErr) ->
     ValSize =
         case Value of
@@ -1770,7 +1773,8 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
                 #bitcask_entry{file_id=OldFileId}
                   when OldFileId > WriteFileId ->
                     State3 = wrap_write_file(State2),
-                    do_put(Key, Value, State3, Retries - 1, already_exists);
+                    do_put(Key, Value, TstampExpiry, State3, Retries - 1, 
+                           already_exists);
 
                 #bitcask_entry{file_id=OldFileId,offset=OldOffset} ->
                     State3 =
@@ -1784,13 +1788,13 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
                             false ->
                                 State2
                         end,
-                    write_and_keydir_put(State3, Key, Value, Tstamp, Retries,
+                    write_and_keydir_put(State3, Key, Value, Tstamp, TstampExpiry, Retries,
                                          bitcask_time:tstamp(), OldFileId, OldOffset);
 
                 _ ->
                     State3 = State2#bc_state{write_file = WriteFile0},
-                    write_and_keydir_put(State3, Key, Value, Tstamp, Retries,
-                                         bitcask_time:tstamp(), 0, 0)
+                    write_and_keydir_put(State3, Key, Value, Tstamp, TstampExpiry,
+                                         Retries, bitcask_time:tstamp(), 0, 0)
             end;
 
         tombstone ->
@@ -1801,7 +1805,7 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
                     % A merge wrote this key in a file > current write file
                     % Start a new write file > the merge output file
                     State3 = wrap_write_file(State2),
-                    do_put(Key, Value, State3, Retries - 1, already_exists);
+                    do_put(Key, Value, TstampExpiry, State3, Retries - 1, already_exists);
                 #bitcask_entry{tstamp=OldTstamp, file_id=OldFileId,
                                offset=OldOffset} ->
                     Tombstone = <<?TOMBSTONE2_STR, OldFileId:32>>,
@@ -1824,7 +1828,7 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
                                     State3 = wrap_write_file(
                                                State2#bc_state {
                                                  write_file = WriteFile3 }),
-                                    do_put(Key, Value, State3,
+                                    do_put(Key, Value, TstampExpiry, State3,
                                            Retries - 1, already_exists);
                                 ok ->
                                     {ok, State2#bc_state { write_file = WriteFile2 }}
@@ -1835,9 +1839,10 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
             end
     end.
 
-write_and_keydir_put(State2, Key, Value, Tstamp, Retries, NowTstamp, OldFileId, OldOffset) ->
+write_and_keydir_put(State2, Key, Value, Tstamp, TstampExpiry, Retries, NowTstamp, 
+                     OldFileId, OldOffset) ->
     case bitcask_fileops:write(State2#bc_state.write_file,
-                               Key, Value, Tstamp) of
+                               Key, Value, Tstamp, TstampExpiry) of
         {ok, WriteFile2, Offset, Size} ->
             case bitcask_nifs:keydir_put(State2#bc_state.keydir, Key,
                                          bitcask_fileops:file_tstamp(WriteFile2),
@@ -1860,7 +1865,8 @@ write_and_keydir_put(State2, Key, Value, Tstamp, Retries, NowTstamp, OldFileId, 
                     {ok, WriteFile3} = bitcask_fileops:un_write(WriteFile2),
                     State3 = wrap_write_file(
                                State2#bc_state { write_file = WriteFile3 }),
-                    do_put(Key, Value, State3, Retries - 1, already_exists)
+                    do_put(Key, Value, TstampExpiry, State3, Retries - 1, 
+                           already_exists)
             end;
         Error2 ->
             throw({unrecoverable, Error2, State2})

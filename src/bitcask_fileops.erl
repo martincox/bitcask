@@ -31,6 +31,7 @@
          close_for_writing/1,
          data_file_tstamps/1,
          write/4,
+         write/5,
          read/3,
          sync/1,
          delete/1,
@@ -282,23 +283,26 @@ delete(#filestate{ filename = FN } = State) ->
     end.
 
 %% @doc Write a Key-named binary data field ("Value") to the Filestate.
--spec write(#filestate{},
-            Key :: binary(), Value :: binary(), Tstamp :: integer()) ->
+-spec write(#filestate{}, Key :: binary(), Value :: binary(), 
+            Tstamp :: integer()) ->
         {ok, #filestate{}, Offset :: integer(), Size :: integer()} |
         {error, read_only}.
 write(#filestate { mode = read_only }, _K, _V, _Tstamp) ->
     {error, read_only};
+write(FileState, Key, Value, Tstamp) ->
+    write(FileState, Key, Value, Tstamp, noexpiry).
+
+%% @doc Write a Key-named binary data field ("Value") to the Filestate.
+-spec write(#filestate{}, Key :: binary(), Value :: binary(), 
+            Tstamp :: integer(), TstampExpiry :: integer()) ->
+        {ok, #filestate{}, Offset :: integer(), Size :: integer()} |
+        {error, read_only}.
+write(#filestate { mode = read_only }, _K, _V, _Tstamp, _TstampExpiry) ->
+    {error, read_only};
 write(Filestate=#filestate{fd = FD, hintfd = HintFD,
                            hintcrc = HintCRC0, ofs = Offset},
-      Key, Value, Tstamp) ->
-    KeySz = size(Key),
-    true = (KeySz =< ?MAXKEYSIZE),
-    ValueSz = size(Value),
-    true = (ValueSz =< ?MAXVALSIZE),
-
-    %% Setup io_list for writing -- avoid merging binaries if we can help it
-    Bytes0 = [<<Tstamp:?TSTAMPFIELD>>, <<KeySz:?KEYSIZEFIELD>>,
-              <<ValueSz:?VALSIZEFIELD>>, Key, Value],
+      Key, Value, Tstamp, TstampExpiry) ->
+    Bytes0 = pack_bytes(Key, Value, Tstamp, TstampExpiry),
     Bytes  = [<<(erlang:crc32(Bytes0)):?CRCSIZEFIELD>> | Bytes0],
     %% Store the full entry in the data file
     try
@@ -307,7 +311,7 @@ write(Filestate=#filestate{fd = FD, hintfd = HintFD,
         TotalSz = iolist_size(Bytes),
         TombInt = case bitcask:is_tombstone(Value) of
                       true  -> 1;
-                      false -> 0
+                      _expiryfalse -> 0
                   end,
         Iolist = hintfile_entry(Key, Tstamp, TombInt, Offset, TotalSz),
         case HintFD of
@@ -360,9 +364,7 @@ read(#filestate { fd = FD }, Offset, Size) ->
             case erlang:crc32(Bytes) of
                 Crc32 ->
                     %% Unpack the actual data
-                    <<_Tstamp:?TSTAMPFIELD,
-                     KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
-                     Key:KeySz/bytes, Value:ValueSz/bytes>> = Bytes,
+                    {Key, Value} = unpack_bytes(Bytes),
                     {ok, Key, Value};
                 _BadCrc ->
                     {error, bad_crc}
@@ -881,3 +883,23 @@ prim_file_drv_open(Driver, Portopts) ->
             {error, Reason}
     end.
 
+pack_bytes(Key, Value, Tstamp, TstampExpiry) ->
+    KeySz = size(Key),
+    true = (KeySz =< ?MAXKEYSIZE),
+    ValueSz = size(Value),
+    true = (ValueSz =< ?MAXVALSIZE),
+    pack_bytes(Key, KeySz, Value, ValueSz, Tstamp, TstampExpiry).
+
+pack_bytes(Key, KeySz, Value, ValueSz, Tstamp, noexpiry) ->
+    [<<Tstamp:?TSTAMPFIELD>>, <<KeySz:?KEYSIZEFIELD>>,
+     <<ValueSz:?VALSIZEFIELD>>, Key, Value];
+pack_bytes(Key, KeySz, Value, ValueSz, Tstamp, TstampExpiry) ->
+    [<<Tstamp:?TSTAMPFIELD>>, <<TstampExpiry:?TSTAMPFIELD>>, <<KeySz:?KEYSIZEFIELD>>,
+     <<ValueSz:?VALSIZEFIELD>>, Key, Value].
+
+unpack_bytes(<<_Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
+           Key:KeySz/bytes, Value:ValueSz/bytes>>) ->
+    {Key, Value};
+unpack_bytes(<<_Tstamp:?TSTAMPFIELD, _TstampExpiry:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD, 
+           ValueSz:?VALSIZEFIELD, Key:KeySz/bytes, Value:ValueSz/bytes>>) ->
+    {Key, Value}.
