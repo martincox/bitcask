@@ -30,7 +30,7 @@
          close_all/1,
          close_for_writing/1,
          data_file_tstamps/1,
-         write/4,
+         write/5,
          read/3,
          sync/1,
          delete/1,
@@ -48,7 +48,7 @@
 
 -include("bitcask.hrl").
 
--define(HINT_RECORD_SZ, 18). % Tstamp(4) + KeySz(2) + TotalSz(4) + Offset(8)
+-define(HINT_RECORD_SZ, 22). % Tstamp(4) + KeySz(2) + TotalSz(4) + Offset(8)
 
 -ifdef(PULSE).
 -compile({parse_transform, pulse_instrument}).
@@ -244,7 +244,7 @@ close_hintfile(State = #filestate { hintfd = HintFd, hintcrc = HintCRC }) ->
     %% timestamp and offset as large as the file format supports so opening with
     %% an older version of bitcask will just reject the record at the end of the
     %% hintfile and otherwise work normally.
-    Iolist = hintfile_entry(<<>>, 0, 0, ?MAXOFFSET_V2, HintCRC),
+    Iolist = hintfile_entry(<<>>, 0, 0, 0, ?MAXOFFSET_V2, HintCRC),
     _ = bitcask_io:file_write(HintFd, Iolist),
     _ = bitcask_io:file_sync(HintFd),
     _ = bitcask_io:file_close(HintFd),
@@ -283,21 +283,21 @@ delete(#filestate{ filename = FN } = State) ->
 
 %% @doc Write a Key-named binary data field ("Value") to the Filestate.
 -spec write(#filestate{},
-            Key :: binary(), Value :: binary(), Tstamp :: integer()) ->
+            Key :: binary(), Value :: binary(), Tstamp :: integer(), TstampExpire :: integer()) ->
         {ok, #filestate{}, Offset :: integer(), Size :: integer()} |
         {error, read_only}.
-write(#filestate { mode = read_only }, _K, _V, _Tstamp) ->
+write(#filestate { mode = read_only }, _K, _V, _Tstamp, _TstampExpire) ->
     {error, read_only};
 write(Filestate=#filestate{fd = FD, hintfd = HintFD,
                            hintcrc = HintCRC0, ofs = Offset},
-      Key, Value, Tstamp) ->
+      Key, Value, Tstamp, TstampExpire) ->
     KeySz = size(Key),
     true = (KeySz =< ?MAXKEYSIZE),
     ValueSz = size(Value),
     true = (ValueSz =< ?MAXVALSIZE),
 
     %% Setup io_list for writing -- avoid merging binaries if we can help it
-    Bytes0 = [<<Tstamp:?TSTAMPFIELD>>, <<KeySz:?KEYSIZEFIELD>>,
+    Bytes0 = [<<Tstamp:?TSTAMPFIELD>>, <<TstampExpire:?TSTAMPFIELD>>, <<KeySz:?KEYSIZEFIELD>>,
               <<ValueSz:?VALSIZEFIELD>>, Key, Value],
     Bytes  = [<<(erlang:crc32(Bytes0)):?CRCSIZEFIELD>> | Bytes0],
     %% Store the full entry in the data file
@@ -309,7 +309,7 @@ write(Filestate=#filestate{fd = FD, hintfd = HintFD,
                       true  -> 1;
                       false -> 0
                   end,
-        Iolist = hintfile_entry(Key, Tstamp, TombInt, Offset, TotalSz),
+        Iolist = hintfile_entry(Key, Tstamp, TstampExpire, TombInt, Offset, TotalSz),
         case HintFD of
             undefined ->
                 ok;
@@ -359,11 +359,7 @@ read(#filestate { fd = FD }, Offset, Size) ->
             %% Verify the CRC of the data
             case erlang:crc32(Bytes) of
                 Crc32 ->
-                    %% Unpack the actual data
-                    <<_Tstamp:?TSTAMPFIELD,
-                     KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
-                     Key:KeySz/bytes, Value:ValueSz/bytes>> = Bytes,
-                    {ok, Key, Value};
+                    unpack_bytes(Bytes);
                 _BadCrc ->
                     {error, bad_crc}
             end;
@@ -528,6 +524,7 @@ hintfile_validate_loop(Fd, CRC0, Rem) ->
 read_crc(Fd) ->
     case bitcask_io:file_read(Fd, ?HINT_RECORD_SZ) of
         {ok, <<0:?TSTAMPFIELD,
+               0:?TSTAMPFIELD,
                0:?KEYSIZEFIELD,
                ExpectCRC:?TOTALSIZEFIELD,
                _TombInt:?TOMBSTONEFIELD_V2,
@@ -545,17 +542,17 @@ fold_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20}) ->
     error_logger:error_msg("fold_loop: CRC error limit at file ~p offset ~p\n",
                            [Filename, Offset]),
     {done, Acc};
-fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
+fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
                 KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
                 Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
               Fun, Acc0, Consumed0,
               {Filename, FTStamp, Offset, CrcSkipCount}) ->
     TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
-    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
         Crc32 ->
             PosInfo = {Filename, FTStamp, Offset, TotalSz},
-            Acc = Fun(Key, Value, Tstamp, PosInfo, Acc0),
+            Acc = Fun(Key, Value, Tstamp, TstampExpire, PosInfo, Acc0),
             fold_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
                           {Filename, FTStamp, Offset + TotalSz,
                            CrcSkipCount});
@@ -588,13 +585,13 @@ fold_keys_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20}) ->
     error_logger:error_msg("fold_loop: CRC error limit at file ~p offset ~p\n",
                            [Filename, Offset]),
     {done, Acc};
-fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
+fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
                      KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
                      Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
                    Fun, Acc0, Consumed0,
                    {Filename, FTStamp, Offset, CrcSkipCount}) ->
     TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
-    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
         Crc32 ->
             PosInfo = {Offset, TotalSz},
@@ -602,7 +599,7 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
                           true  -> {tombstone, Key};
                           false -> Key
                       end,
-            Acc = Fun(KeyPlus, Tstamp, PosInfo, Acc0),
+            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
             fold_keys_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
                                {Filename, FTStamp, Offset + TotalSz,
                                 CrcSkipCount});
@@ -641,7 +638,7 @@ fold_hintfile(State, Fun, Acc0) ->
 %% conditional end match here, checking that we get the expected CRC-containing
 %% hint record, three-tuple done indicates that we've exhausted all bytes, or
 %% it's an error
-fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
+fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
                      _ExpectCRC:?TOTALSIZEFIELD,
                      _TombInt:?TOMBSTONEFIELD_V2, (?MAXOFFSET_V2):?OFFSETFIELD_V2>>,
                    _Fun, Acc, Consumed, _Args) ->
@@ -649,7 +646,7 @@ fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
 %% main work loop here, containing the full match of hint record and key.
 %% if it gets a match, it proceeds to recurse over the rest of the big
 %% binary
-fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                      TotalSz:?TOTALSIZEFIELD,
                      TombInt:?TOMBSTONEFIELD_V2, Offset:?OFFSETFIELD_V2,
                      Key:KeySz/bytes, Rest/binary>>,
@@ -660,7 +657,7 @@ fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
             KeyPlus = if TombInt == 1 -> {tombstone, Key};
                          true         -> Key
                       end,
-            Acc = Fun(KeyPlus, Tstamp, PosInfo, Acc0),
+            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
             Consumed = KeySz + ?HINT_RECORD_SZ + Consumed0,
             fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
         false ->
@@ -777,9 +774,9 @@ open_hint_file(Filename, FinalOpts, Count) ->
             open_hint_file(Filename, FinalOpts, Count - 1)
     end.
 
-hintfile_entry(Key, Tstamp, TombInt, Offset, TotalSz) ->
+hintfile_entry(Key, Tstamp, TstampExpire, TombInt, Offset, TotalSz) ->
     KeySz = size(Key),
-    [<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD, TotalSz:?TOTALSIZEFIELD,
+    [<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD, TotalSz:?TOTALSIZEFIELD,
        TombInt:?TOMBSTONEFIELD_V2, Offset:?OFFSETFIELD_V2>>, Key].
 
 %% ===================================================================
@@ -881,3 +878,9 @@ prim_file_drv_open(Driver, Portopts) ->
             {error, Reason}
     end.
 
+unpack_bytes(<<_Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
+               Key:KeySz/bytes, Value:ValueSz/bytes>>) ->
+    {ok, Key, Value};
+unpack_bytes(<<_Tstamp:?TSTAMPFIELD, _TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD, 
+               ValueSz:?VALSIZEFIELD, Key:KeySz/bytes, Value:ValueSz/bytes>>) ->
+    {ok, Key, Value}.

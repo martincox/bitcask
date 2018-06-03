@@ -3,7 +3,8 @@
                          file_id :: integer(),
                          total_sz :: integer(),
                          offset :: integer() | binary(), 
-                         tstamp :: integer() }).
+                         tstamp :: integer(),
+                         tstamp_expire = 0 :: integer() }).
 
 
 %% @type filestate().
@@ -53,7 +54,7 @@
 -define(TOTALSIZEFIELD, 32).
 -define(VALSIZEFIELD, 32).
 -define(CRCSIZEFIELD, 32).
--define(HEADER_SIZE,  14). % 4 + 4 + 2 + 4 bytes
+-define(HEADER_SIZE,  18). % 4 + 4 + 2 + 4 bytes
 -define(MAXKEYSIZE, 2#1111111111111111).
 -define(MAXVALSIZE, 2#11111111111111111111111111111111).
 -define(MAXOFFSET_V2, 16#7fffffffffffffff). % max 63-bit unsigned
