@@ -286,7 +286,7 @@ get(Ref, Key, TryNum) ->
 
 %% @doc Store a key and value in a bitcase datastore.
 put(Ref, Key, Value) ->
-    put(Ref, Key, Value, 0).
+    put(Ref, Key, Value, 2147483647).
 
 %% @doc Store a key and value in a bitcase datastore with expiry tstamp.
 put(Ref, Key, Value, TstampExpire) ->
@@ -357,8 +357,8 @@ fold_keys(Ref, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
     Now = bitcask_time:tstamp(),
     RealFun = fun(BCEntry, Acc) ->
         Key = BCEntry#bitcask_entry.key,
-        case BCEntry#bitcask_entry.tstamp < ExpiryTime orelse 
-             #bitcask_entry.tstamp_expire =< Now of
+        case BCEntry#bitcask_entry.tstamp < ExpiryTime orelse
+             BCEntry#bitcask_entry.tstamp_expire < Now of
             true ->
                 Acc;
             false ->
@@ -2155,7 +2155,7 @@ fold_test2() ->
     B = init_dataset("/tmp/bc.test.fold", default_dataset()),
 
     File = (get_state(B))#bc_state.write_file,
-    L = bitcask_fileops:fold(File, fun(K, V, _Ts, _Pos, Acc) ->
+    L = bitcask_fileops:fold(File, fun(K, V, _Ts, _TstampExpire, _Pos, Acc) ->
                                            [{K, V} | Acc]
                                    end, []),
     ?assertEqual(default_dataset(), lists:reverse(L)),
@@ -2925,7 +2925,7 @@ frag_status_test2() ->
     ok = bitcask:close(B1),
     % close and reopen so that status can reflect a closed file
     B2 = bitcask:open("/tmp/bc.test.fragtest", [read_write]),
-    {1,[{_,50,16,32}]} = bitcask:status(B2),
+    {1,[{_,50,20,40}]} = bitcask:status(B2),
     %% 1 key, 50% frag, 16 dead bytes, 32 total bytes
     ok = bitcask:close(B2),
     ok.
@@ -3680,7 +3680,7 @@ update_tombstones_test() ->
                {ok, Fd} = bitcask_fileops:open_file(File),
                Fd
            end || File <- Files],
-    CountF = fun(_K, V, _Tstamp, _, Acc) ->
+    CountF = fun(_K, V, _Tstamp, _, _, Acc) ->
                      case bitcask:is_tombstone(V) of
                          true -> Acc + 1;
                          false -> Acc
