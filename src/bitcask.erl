@@ -420,7 +420,7 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                                                  KeyTxErr ->
                                                      {key_tx_error, {K0, KeyTxErr}}
                                              end,
-                                         case {K, (TStamp < ExpiryTime orelse TstampExpire =< Now)} of
+                                         case {K, (TStamp < ExpiryTime orelse TstampExpire < Now)} of
                                              {{key_tx_error, TxErr}, _} ->
                                                  error_logger:error_msg("Error converting key ~p: ~p", [K0, TxErr]),
                                                  Acc;
