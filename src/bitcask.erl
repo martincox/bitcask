@@ -358,7 +358,7 @@ fold_keys(Ref, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
     RealFun = fun(BCEntry, Acc) ->
         Key = BCEntry#bitcask_entry.key,
         case BCEntry#bitcask_entry.tstamp < ExpiryTime orelse 
-             #bitcask_entry.tstamp_expire =< Now of
+             #bitcask_entry.tstamp_expire < Now of
             true ->
                 Acc;
             false ->
@@ -420,7 +420,7 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                                                  KeyTxErr ->
                                                      {key_tx_error, {K0, KeyTxErr}}
                                              end,
-                                         case {K, (TStamp < ExpiryTime orelse TstampExpire =< Now)} of
+                                         case {K, (TStamp < ExpiryTime orelse TstampExpire < Now)} of
                                              {{key_tx_error, TxErr}, _} ->
                                                  error_logger:error_msg("Error converting key ~p: ~p", [K0, TxErr]),
                                                  Acc;
@@ -2155,7 +2155,7 @@ fold_test2() ->
     B = init_dataset("/tmp/bc.test.fold", default_dataset()),
 
     File = (get_state(B))#bc_state.write_file,
-    L = bitcask_fileops:fold(File, fun(K, V, _Ts, _Pos, Acc) ->
+    L = bitcask_fileops:fold(File, fun(K, V, _Ts, _TstampExpire, _Pos, Acc) ->
                                            [{K, V} | Acc]
                                    end, []),
     ?assertEqual(default_dataset(), lists:reverse(L)),
