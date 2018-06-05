@@ -286,7 +286,7 @@ get(Ref, Key, TryNum) ->
 
 %% @doc Store a key and value in a bitcase datastore.
 put(Ref, Key, Value) ->
-    put(Ref, Key, Value, 2147483647).
+    put(Ref, Key, Value, ?DEFAULT_TSTAMP_EXPIRE).
 
 %% @doc Store a key and value in a bitcase datastore with expiry tstamp.
 put(Ref, Key, Value, TstampExpire) ->
