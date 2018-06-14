@@ -40,6 +40,7 @@
          filename/1,
          hintfile_name/1,
          file_tstamp/1,
+         file_version/1,
          check_write/4,
          un_write/1]).
 -export([read_file_info/1, write_file_info/2, is_file/1]).
@@ -93,7 +94,8 @@ create_file(DirName, Opts0, Keydir) ->
                 {ok, #filestate{mode = read_write,
                                 filename = Filename,
                                 tstamp = file_tstamp(Filename),
-                                hintfd = HintFD, fd = FD, ofs = 0}}
+                                hintfd = HintFD, fd = FD, ofs = 0, 
+                                version=?CURRENT_FILE_FORMAT_VERSION}}
             catch Error:Reason ->
                     %% if we fail somehow, do we need to nuke any partial
                     %% state?
@@ -153,7 +155,8 @@ open_file(Filename, append) ->
                                         fd = FD,
                                         hintfd = HintFD,
                                         hintcrc = HintCRC,
-                                        ofs = Ofs
+                                        ofs = Ofs,
+                                        version = file_version(Filename)
                                        }}
                     end
             end;
@@ -260,6 +263,10 @@ data_file_tstamps(Dirname) ->
               fun(Filename, Acc) ->
                       case string:tokens(Filename, ".") of
                           [TSString, _, "data"] ->
+                              [{list_to_integer(TSString),
+                                filename:join(Dirname, Filename)}
+                                | Acc];
+                          [TSString, _, _, "data"] ->
                               [{list_to_integer(TSString),
                                 filename:join(Dirname, Filename)}
                                 | Acc];
@@ -381,11 +388,11 @@ sync(#filestate { mode = read_write, fd = Fd, hintfd = HintFd }) ->
            any()) ->
         any() | {error, any()}.
 fold(fresh, _Fun, Acc) -> Acc;
-fold(#filestate { fd=Fd, filename=Filename, tstamp=FTStamp }, Fun, Acc0) ->
+fold(#filestate { fd=Fd, filename=Filename, tstamp=FTStamp, version=Version}, Fun, Acc0) ->
     %% TODO: Add some sort of check that this is a read-only file
     ok = bitcask_io:file_seekbof(Fd),
     case fold_file_loop(Fd, regular, fun fold_int_loop/5, Fun, Acc0,
-                        {Filename, FTStamp, 0, 0}) of
+                        {Filename, FTStamp, 0, 0, Version}) of
         {error, Reason} ->
             {error, Reason};
         Acc -> Acc
@@ -438,7 +445,8 @@ fold_keys(State, Fun, Acc, recovery, _, false) ->
 -spec mk_filename(string(), integer()) -> string().
 mk_filename(Dirname, Tstamp) ->
     filename:join(Dirname,
-                  lists:concat([integer_to_list(Tstamp),".bitcask.data"])).
+                  lists:concat([integer_to_list(Tstamp),".",
+                                integer_to_list(?CURRENT_FILE_FORMAT_VERSION), ".bitcask.data"])).
 
 -spec filename(#filestate{}) -> string().
 filename(#filestate { filename = Fname }) ->
@@ -454,7 +462,17 @@ hintfile_name(#filestate { filename = Fname }) ->
 file_tstamp(#filestate{tstamp=Tstamp}) ->
     Tstamp;
 file_tstamp(Filename) when is_list(Filename) ->
-    list_to_integer(filename:basename(Filename, ".bitcask.data")).
+    BaseFileName = filename:basename(Filename),
+    [Tstamp|_] = re:split(BaseFileName,"[.]",[{return,list}]),
+    list_to_integer(Tstamp).
+
+-spec file_version(#filestate{} | string()) -> integer().
+file_version(#filestate{version=Version}) ->
+    Version;
+file_version(Filename) when is_list(Filename) ->
+    BaseFileName = filename:basename(Filename),
+    [_Tstamp, Version|_] = re:split(BaseFileName,"[.]",[{return,list}]),
+    list_to_integer(Version).
 
 -spec check_write(fresh | #filestate{}, binary(), non_neg_integer(), integer()) ->
       fresh | wrap | ok.
@@ -538,7 +556,7 @@ read_crc(Fd) ->
 %% Internal functions
 %% ===================================================================
 
-fold_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20}) ->
+fold_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20, _Version}) ->
     error_logger:error_msg("fold_loop: CRC error limit at file ~p offset ~p\n",
                            [Filename, Offset]),
     {done, Acc};
@@ -546,7 +564,7 @@ fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFI
                 KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
                 Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
               Fun, Acc0, Consumed0,
-              {Filename, FTStamp, Offset, CrcSkipCount}) ->
+              {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
     TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
@@ -555,19 +573,41 @@ fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFI
             Acc = Fun(Key, Value, Tstamp, TstampExpire, PosInfo, Acc0),
             fold_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
                           {Filename, FTStamp, Offset + TotalSz,
-                           CrcSkipCount});
+                           CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION});
         _ ->
             error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
                                    "skipping ~p bytes\n",
                                    [Filename, Offset, TotalSz]),
             fold_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
                           {Filename, FTStamp, Offset + TotalSz,
-                           CrcSkipCount + 1})
+                           CrcSkipCount + 1, ?DEFAULT_FILE_FORMAT_VERSION})
+    end;
+fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
+                KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
+                Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
+              Fun, Acc0, Consumed0,
+              {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+                         ValueSz:?VALSIZEFIELD>>, Key, Value]) of
+        Crc32 ->
+            PosInfo = {Filename, FTStamp, Offset, TotalSz},
+            Acc = Fun(Key, Value, Tstamp, TstampExpire, PosInfo, Acc0),
+            fold_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
+                          {Filename, FTStamp, Offset + TotalSz,
+                           CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION});
+        _ ->
+            error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
+                                   "skipping ~p bytes\n",
+                                   [Filename, Offset, TotalSz]),
+            fold_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
+                          {Filename, FTStamp, Offset + TotalSz,
+                           CrcSkipCount + 1, ?CURRENT_FILE_FORMAT_VERSION})
     end;
 fold_int_loop(_Bytes, _Fun, Acc, Consumed, Args) ->
     {more, Acc, Consumed, Args}.
 
-fold_keys_loop(#filestate{fd=Fd, filename=Filename, tstamp=FTStamp}, Offset,
+fold_keys_loop(#filestate{fd=Fd, filename=Filename, tstamp=FTStamp, version=Version}, Offset,
                Fun, Acc0) ->
     case bitcask_io:file_position(Fd, Offset) of
         {ok, Offset} -> ok;
@@ -575,21 +615,47 @@ fold_keys_loop(#filestate{fd=Fd, filename=Filename, tstamp=FTStamp}, Offset,
     end,
 
     case fold_file_loop(Fd, regular, fun fold_keys_int_loop/5, Fun, Acc0,
-                        {Filename, FTStamp, Offset, 0}) of
+                        {Filename, FTStamp, Offset, 0, Version}) of
         {error, Reason} ->
             {error, Reason};
         Acc -> Acc
     end.
 
-fold_keys_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20}) ->
+fold_keys_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20, _Value}) ->
     error_logger:error_msg("fold_loop: CRC error limit at file ~p offset ~p\n",
                            [Filename, Offset]),
     {done, Acc};
+fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
+                     KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
+                     Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
+                   Fun, Acc0, Consumed0,
+                   {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+                         ValueSz:?VALSIZEFIELD>>, Key, Value]) of
+        Crc32 ->
+            PosInfo = {Offset, TotalSz},
+            KeyPlus = case bitcask:is_tombstone(Value) of
+                          true  -> {tombstone, Key};
+                          false -> Key
+                      end,
+            Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0),
+            fold_keys_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
+                               {Filename, FTStamp, Offset + TotalSz,
+                                CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION});
+        _ ->
+            error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
+                                   "skipping ~p bytes\n",
+                                   [Filename, Offset, TotalSz]),
+            fold_keys_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
+                               {Filename, FTStamp, Offset + TotalSz,
+                                CrcSkipCount + 1, ?DEFAULT_FILE_FORMAT_VERSION})
+    end;
 fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
                      KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
                      Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
                    Fun, Acc0, Consumed0,
-                   {Filename, FTStamp, Offset, CrcSkipCount}) ->
+                   {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
     TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
@@ -602,14 +668,14 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TST
             Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
             fold_keys_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
                                {Filename, FTStamp, Offset + TotalSz,
-                                CrcSkipCount});
+                                CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION});
         _ ->
             error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
                                    "skipping ~p bytes\n",
                                    [Filename, Offset, TotalSz]),
             fold_keys_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
                                {Filename, FTStamp, Offset + TotalSz,
-                                CrcSkipCount + 1})
+                                CrcSkipCount + 1, ?CURRENT_FILE_FORMAT_VERSION})
     end;
 fold_keys_int_loop(_Bytes, _Fun, Acc, Consumed, Args) ->
     {more, Acc, Consumed, Args}.

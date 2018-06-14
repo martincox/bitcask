@@ -2101,7 +2101,7 @@ list_data_files_test2() ->
     os:cmd("rm -rf /tmp/bc.test.list; mkdir -p /tmp/bc.test.list"),
 
     %% Generate a list of files from 8->12
-    ExpFiles = [?FMT("/tmp/bc.test.list/~w.bitcask.data", [I]) ||
+    ExpFiles = [?FMT("/tmp/bc.test.list/~w.1.bitcask.data", [I]) ||
                    I <- lists:seq(8, 12)],
 
     %% Create each of the files
@@ -2116,7 +2116,7 @@ list_data_files_test2() ->
 list_data_files_race_test() ->
     Dir = "/tmp/bc.test.list.race",
     Fname = fun(N) ->
-                    filename:join(Dir, integer_to_list(N) ++ ".bitcask.data")
+                    filename:join(Dir, integer_to_list(N) ++ ".1.bitcask.data")
             end,
     WriteFile = fun(N) ->
                         ok = file:write_file(Fname(N), <<>>)
@@ -2736,9 +2736,9 @@ corrupt_file_test2() ->
     %% write bogus data at end of hintfile, verify non-crash
     os:cmd("rm -rf /tmp/bc.test.corrupt.hint"),
     os:cmd("mkdir /tmp/bc.test.corrupt.hint"),
-    os:cmd("cp -r /tmp/bc.test.corrupt/*hint /tmp/bc.test.corrupt.hint/100.bitcask.hint"),
-    os:cmd("cp -r /tmp/bc.test.corrupt/*data /tmp/bc.test.corrupt.hint/100.bitcask.data"),
-    HFN = "/tmp/bc.test.corrupt.hint/100.bitcask.hint",
+    os:cmd("cp -r /tmp/bc.test.corrupt/*hint /tmp/bc.test.corrupt.hint/100.1.bitcask.hint"),
+    os:cmd("cp -r /tmp/bc.test.corrupt/*data /tmp/bc.test.corrupt.hint/100.1.bitcask.data"),
+    HFN = "/tmp/bc.test.corrupt.hint/100.1.bitcask.hint",
     {ok, HFD} = file:open(HFN, [append, raw, binary]),
     ok = file:write(HFD, <<"1">>),
     file:close(HFD),
@@ -2749,8 +2749,8 @@ corrupt_file_test2() ->
     %% write bogus data at end of datafile, no hintfile, verify non-crash
     os:cmd("rm -rf /tmp/bc.test.corrupt.data"),
     os:cmd("mkdir /tmp/bc.test.corrupt.data"),
-    os:cmd("cp -r /tmp/bc.test.corrupt/*data /tmp/bc.test.corrupt.data/100.bitcask.data"),
-    DFN = "/tmp/bc.test.corrupt.data/100.bitcask.data",
+    os:cmd("cp -r /tmp/bc.test.corrupt/*data /tmp/bc.test.corrupt.data/100.1.bitcask.data"),
+    DFN = "/tmp/bc.test.corrupt.data/100.1.bitcask.data",
     {ok, DFD} = file:open(DFN, [append, raw, binary]),
     ok = file:write(DFD, <<"2">>),
     file:close(DFD),
@@ -2761,8 +2761,8 @@ corrupt_file_test2() ->
     %% as above, but more than just headersize data
     os:cmd("rm -rf /tmp/bc.test.corrupt.data2"),
     os:cmd("mkdir /tmp/bc.test.corrupt.data2"),
-    os:cmd("cp -r /tmp/bc.test.corrupt/*data /tmp/bc.test.corrupt.data2/100.bitcask.data"),
-    D2FN = "/tmp/bc.test.corrupt.data2/100.bitcask.data",
+    os:cmd("cp -r /tmp/bc.test.corrupt/*data /tmp/bc.test.corrupt.data2/100.1.bitcask.data"),
+    D2FN = "/tmp/bc.test.corrupt.data2/100.1.bitcask.data",
     {ok, D2FD} = file:open(D2FN, [append, raw, binary]),
     ok = file:write(D2FD, <<"123456789012345">>),
     file:close(D2FD),
@@ -2777,7 +2777,7 @@ invalid_data_size_test_() ->
 
 invalid_data_size_test2() ->
     TestDir = "/tmp/bc.test.invalid_data_size_test",
-    TestDataFile = TestDir ++ "/1.bitcask.data",
+    TestDataFile = TestDir ++ "/1.1.bitcask.data",
 
     os:cmd("rm -rf " ++ TestDir),
     B = bitcask:open(TestDir, [read_write]),
@@ -2962,7 +2962,7 @@ truncated_hintfile_test() ->
 
     [HintFile|_] = filelib:wildcard(Dir ++ "/*.hint"),
     %% 1900 was determined via file inspection, may drift with version
-    truncate_file(HintFile, 1900),
+    truncate_file(HintFile, 2300),
 
     B2 = bitcask:open(Dir, [read_write]),
     {FS, _} = get_filestate(1, get(B2)),
@@ -3512,10 +3512,10 @@ total_byte_stats_test2() ->
                          || #file_status{filename=File,
                                          total_bytes=Size} <- FStats]),
     ExpFiles1 =
-        [{Dir ++ "/1.bitcask.data", 2 + 1 + ?HEADER_SIZE},
-         {Dir ++ "/2.bitcask.data", 2 + 1 + ?HEADER_SIZE},
-         {Dir ++ "/3.bitcask.data", 2 + ?TOMBSTONE2_SIZE + ?HEADER_SIZE},
-         {Dir ++ "/4.bitcask.data", 2 + 1 + ?HEADER_SIZE}],
+        [{Dir ++ "/1.1.bitcask.data", 2 + 1 + ?HEADER_SIZE},
+         {Dir ++ "/2.1.bitcask.data", 2 + 1 + ?HEADER_SIZE},
+         {Dir ++ "/3.1.bitcask.data", 2 + ?TOMBSTONE2_SIZE + ?HEADER_SIZE},
+         {Dir ++ "/4.1.bitcask.data", 2 + 1 + ?HEADER_SIZE}],
     ?assertEqual(ExpFiles1, Files1),
     bitcask:close(B).
 
@@ -3529,7 +3529,7 @@ merge_batch_test2() ->
     close(init_dataset(Dir, [{max_file_size, 1}], DataSet)),
     BFile =
         fun(N) ->
-                filename:join(Dir, integer_to_list(N) ++ ".bitcask.data")
+                filename:join(Dir, integer_to_list(N) ++ ".1.bitcask.data")
         end,
     % Simple transform for compact test data representation below
     % Numbers -> binary bitcask file name, with 0 -> <<>>
@@ -3537,7 +3537,7 @@ merge_batch_test2() ->
         fun(L) ->
                 [case N of
                      blank -> "\n";
-                     _ -> integer_to_list(N)++".bitcask.data\n"
+                     _ -> integer_to_list(N)++".1.bitcask.data\n"
                  end || N <- L]
         end,
     % Number to full path bitcask file transform
@@ -3574,7 +3574,7 @@ merge_expired_test2() ->
     ok = bitcask:delete(B, KF(1)),
     put_kvs(B, KVGen(4, NKeys)),
     % Merge away the first 4 files as if they were completely expired,
-    FirstFiles = [Dir ++ "/" ++ integer_to_list(N) ++ ".bitcask.data" ||
+    FirstFiles = [Dir ++ "/" ++ integer_to_list(N) ++ ".1.bitcask.data" ||
                   N <- lists:seq(1, 4)],
     ?assertEqual(ok, bitcask:merge(Dir, [], {FirstFiles, FirstFiles})),
     ExpectedKeys = [KF(N) || N <- lists:seq(4, NKeys)],

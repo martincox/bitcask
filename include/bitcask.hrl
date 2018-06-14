@@ -17,7 +17,8 @@
                     ofs :: non_neg_integer(), % Current offset for writing
                     l_ofs=0 :: non_neg_integer(),  % Last offset written to data file
                     l_hbytes=0 :: non_neg_integer(),% Last # bytes written to hint file
-                    l_hintcrc=0 :: non_neg_integer()}). % CRC-32 of current hint prior to last write
+                    l_hintcrc=0 :: non_neg_integer(),
+                    version=1 :: non_neg_integer()}). % CRC-32 of current hint prior to last write
 
 -record(file_status, { filename :: string(),
                       fragmented :: integer(),
@@ -25,7 +26,8 @@
                       total_bytes :: integer(),
                       oldest_tstamp :: integer(),
                       newest_tstamp :: integer(),
-                      expiration_epoch :: non_neg_integer() }).
+                      expiration_epoch :: non_neg_integer(),
+                      version=1 :: non_neg_integer() }).
 
 
 -define(FMT(Str, Args), lists:flatten(io_lib:format(Str, Args))).
@@ -65,3 +67,6 @@
 -define(MAX_CHUNK_SIZE, 134217728).
 
 -define(DEFAULT_TSTAMP_EXPIRE, 2147483647).
+
+-define(DEFAULT_FILE_FORMAT_VERSION, 0).
+-define(CURRENT_FILE_FORMAT_VERSION, 1).

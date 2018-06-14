@@ -149,6 +149,7 @@ check_model(Ref, Model) ->
 total_sz(K, V) -> % Total size of bitcask entry in bytes
     ((32 + % crc
       32 + % tstamps
+      32 + % tstamp_expire
       16 + % key size
       32) div 8) + % val size
         size(K) + size(V).
