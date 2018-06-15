@@ -688,7 +688,7 @@ fold_hintfile(State, Fun, Acc0) ->
                 {ok, DataI} = read_file_info(State#filestate.filename),
                 DataSize = DataI#file_info.size,
                 case fold_file_loop(HintFd, hint, fun fold_hintfile_loop/5, Fun,
-                                    Acc0, {DataSize, HintFile}) of
+                                    Acc0, {DataSize, HintFile, State#filestate.version}) of
                     {error, Reason} ->
                         {error, Reason};
                     Acc ->
@@ -712,11 +712,31 @@ fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
 %% main work loop here, containing the full match of hint record and key.
 %% if it gets a match, it proceeds to recurse over the rest of the big
 %% binary
+fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+                     TotalSz:?TOTALSIZEFIELD,
+                     TombInt:?TOMBSTONEFIELD_V2, Offset:?OFFSETFIELD_V2,
+                     Key:KeySz/bytes, Rest/binary>>,
+                   Fun, Acc0, Consumed0, {DataSize, HintFile, ?DEFAULT_FILE_FORMAT_VERSION} = Args) ->
+    case Offset + TotalSz =< DataSize + 1 of
+        true ->
+            PosInfo = {Offset, TotalSz},
+            KeyPlus = if TombInt == 1 -> {tombstone, Key};
+                         true         -> Key
+                      end,
+            Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0),
+            Consumed = KeySz + ?HINT_RECORD_SZ + Consumed0,
+            fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
+        false ->
+            error_logger:warning_msg("Hintfile '~s' contains pointer ~p ~p "
+                                     "that is greater than total data size ~p\n",
+                                     [HintFile, Offset, TotalSz, DataSize]),
+            {error, {trunc_hintfile, Acc0}}
+    end;
 fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                      TotalSz:?TOTALSIZEFIELD,
                      TombInt:?TOMBSTONEFIELD_V2, Offset:?OFFSETFIELD_V2,
                      Key:KeySz/bytes, Rest/binary>>,
-                   Fun, Acc0, Consumed0, {DataSize, HintFile} = Args) ->
+                   Fun, Acc0, Consumed0, {DataSize, HintFile, ?CURRENT_FILE_FORMAT_VERSION} = Args) ->
     case Offset + TotalSz =< DataSize + 1 of
         true ->
             PosInfo = {Offset, TotalSz},
