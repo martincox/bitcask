@@ -563,14 +563,36 @@ fold_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20, _Version})
 fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
                 KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
                 Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
-              Fun, Acc0, Consumed0,
-              {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
+                Fun, Acc0, Consumed0,
+                {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
     TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
-                         ValueSz:?VALSIZEFIELD>>, Key, Value]) of
+        ValueSz:?VALSIZEFIELD>>, Key, Value]) of
         Crc32 ->
             PosInfo = {Filename, FTStamp, Offset, TotalSz},
             Acc = Fun(Key, Value, Tstamp, TstampExpire, PosInfo, Acc0),
+            fold_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
+                {Filename, FTStamp, Offset + TotalSz,
+                    CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION});
+        _ ->
+            error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
+            "skipping ~p bytes\n",
+                [Filename, Offset, TotalSz]),
+            fold_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
+                {Filename, FTStamp, Offset + TotalSz,
+                    CrcSkipCount + 1, ?CURRENT_FILE_FORMAT_VERSION})
+    end;
+fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
+                KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
+                Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
+              Fun, Acc0, Consumed0,
+              {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+                         ValueSz:?VALSIZEFIELD>>, Key, Value]) of
+        Crc32 ->
+            PosInfo = {Filename, FTStamp, Offset, TotalSz},
+            Acc = Fun(Key, Value, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0),
             fold_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
                           {Filename, FTStamp, Offset + TotalSz,
                            CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION});
@@ -581,28 +603,6 @@ fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFI
             fold_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
                           {Filename, FTStamp, Offset + TotalSz,
                            CrcSkipCount + 1, ?DEFAULT_FILE_FORMAT_VERSION})
-    end;
-fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
-                KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
-                Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
-              Fun, Acc0, Consumed0,
-              {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
-    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
-    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
-                         ValueSz:?VALSIZEFIELD>>, Key, Value]) of
-        Crc32 ->
-            PosInfo = {Filename, FTStamp, Offset, TotalSz},
-            Acc = Fun(Key, Value, Tstamp, TstampExpire, PosInfo, Acc0),
-            fold_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
-                          {Filename, FTStamp, Offset + TotalSz,
-                           CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION});
-        _ ->
-            error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
-                                   "skipping ~p bytes\n",
-                                   [Filename, Offset, TotalSz]),
-            fold_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
-                          {Filename, FTStamp, Offset + TotalSz,
-                           CrcSkipCount + 1, ?CURRENT_FILE_FORMAT_VERSION})
     end;
 fold_int_loop(_Bytes, _Fun, Acc, Consumed, Args) ->
     {more, Acc, Consumed, Args}.
@@ -625,11 +625,37 @@ fold_keys_int_loop(_Bytes, _Fun, Acc, _Consumed, {Filename, _, Offset, 20, _Valu
     error_logger:error_msg("fold_loop: CRC error limit at file ~p offset ~p\n",
                            [Filename, Offset]),
     {done, Acc};
+fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
+                    KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
+                    Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
+                    Fun, Acc0, Consumed0,
+                    {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+        ValueSz:?VALSIZEFIELD>>, Key, Value]) of
+        Crc32 ->
+            PosInfo = {Offset, TotalSz},
+            KeyPlus = case bitcask:is_tombstone(Value) of
+                          true  -> {tombstone, Key};
+                          false -> Key
+                      end,
+            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
+            fold_keys_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
+                {Filename, FTStamp, Offset + TotalSz,
+                    CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION});
+        _ ->
+            error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
+            "skipping ~p bytes\n",
+                [Filename, Offset, TotalSz]),
+            fold_keys_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
+                {Filename, FTStamp, Offset + TotalSz,
+                    CrcSkipCount + 1, ?CURRENT_FILE_FORMAT_VERSION})
+    end;
 fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
                      KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
                      Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
-                   Fun, Acc0, Consumed0,
-                   {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
+                    Fun, Acc0, Consumed0,
+                    {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
     TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
@@ -650,32 +676,6 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
             fold_keys_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
                                {Filename, FTStamp, Offset + TotalSz,
                                 CrcSkipCount + 1, ?DEFAULT_FILE_FORMAT_VERSION})
-    end;
-fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD,
-                     KeySz:?KEYSIZEFIELD, ValueSz:?VALSIZEFIELD,
-                     Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
-                   Fun, Acc0, Consumed0,
-                   {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
-    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
-    case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
-                         ValueSz:?VALSIZEFIELD>>, Key, Value]) of
-        Crc32 ->
-            PosInfo = {Offset, TotalSz},
-            KeyPlus = case bitcask:is_tombstone(Value) of
-                          true  -> {tombstone, Key};
-                          false -> Key
-                      end,
-            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
-            fold_keys_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
-                               {Filename, FTStamp, Offset + TotalSz,
-                                CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION});
-        _ ->
-            error_logger:error_msg("fold_loop: CRC error at file ~s offset ~p, "
-                                   "skipping ~p bytes\n",
-                                   [Filename, Offset, TotalSz]),
-            fold_keys_int_loop(Rest, Fun, Acc0, Consumed0 + TotalSz,
-                               {Filename, FTStamp, Offset + TotalSz,
-                                CrcSkipCount + 1, ?CURRENT_FILE_FORMAT_VERSION})
     end;
 fold_keys_int_loop(_Bytes, _Fun, Acc, Consumed, Args) ->
     {more, Acc, Consumed, Args}.
@@ -707,8 +707,33 @@ fold_hintfile(State, Fun, Acc0) ->
 fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
                      _ExpectCRC:?TOTALSIZEFIELD,
                      _TombInt:?TOMBSTONEFIELD_V2, (?MAXOFFSET_V2):?OFFSETFIELD_V2>>,
-                   _Fun, Acc, Consumed, _Args) ->
+                   _Fun, Acc, Consumed, {_DataSize, _HintFile, ?CURRENT_FILE_FORMAT_VERSION}) ->
     {done, Acc, Consumed + ?HINT_RECORD_SZ};
+fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
+                _ExpectCRC:?TOTALSIZEFIELD,
+                _TombInt:?TOMBSTONEFIELD_V2, (?MAXOFFSET_V2):?OFFSETFIELD_V2>>,
+                _Fun, Acc, Consumed, {_DataSize, _HintFile, ?DEFAULT_FILE_FORMAT_VERSION}) ->
+    {done, Acc, Consumed + ?HINT_RECORD_SZ};
+fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
+    TotalSz:?TOTALSIZEFIELD,
+    TombInt:?TOMBSTONEFIELD_V2, Offset:?OFFSETFIELD_V2,
+    Key:KeySz/bytes, Rest/binary>>,
+    Fun, Acc0, Consumed0, {DataSize, HintFile, ?CURRENT_FILE_FORMAT_VERSION} = Args) ->
+    case Offset + TotalSz =< DataSize + 1 of
+        true ->
+            PosInfo = {Offset, TotalSz},
+            KeyPlus = if TombInt == 1 -> {tombstone, Key};
+                          true         -> Key
+                      end,
+            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
+            Consumed = KeySz + ?HINT_RECORD_SZ + Consumed0,
+            fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
+        false ->
+            error_logger:warning_msg("Hintfile '~s' contains pointer ~p ~p "
+            "that is greater than total data size ~p\n",
+                [HintFile, Offset, TotalSz, DataSize]),
+            {error, {trunc_hintfile, Acc0}}
+    end;
 %% main work loop here, containing the full match of hint record and key.
 %% if it gets a match, it proceeds to recurse over the rest of the big
 %% binary
@@ -724,26 +749,6 @@ fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          true         -> Key
                       end,
             Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0),
-            Consumed = KeySz + ?HINT_RECORD_SZ + Consumed0,
-            fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
-        false ->
-            error_logger:warning_msg("Hintfile '~s' contains pointer ~p ~p "
-                                     "that is greater than total data size ~p\n",
-                                     [HintFile, Offset, TotalSz, DataSize]),
-            {error, {trunc_hintfile, Acc0}}
-    end;
-fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
-                     TotalSz:?TOTALSIZEFIELD,
-                     TombInt:?TOMBSTONEFIELD_V2, Offset:?OFFSETFIELD_V2,
-                     Key:KeySz/bytes, Rest/binary>>,
-                   Fun, Acc0, Consumed0, {DataSize, HintFile, ?CURRENT_FILE_FORMAT_VERSION} = Args) ->
-    case Offset + TotalSz =< DataSize + 1 of
-        true ->
-            PosInfo = {Offset, TotalSz},
-            KeyPlus = if TombInt == 1 -> {tombstone, Key};
-                         true         -> Key
-                      end,
-            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
             Consumed = KeySz + ?HINT_RECORD_SZ + Consumed0,
             fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
         false ->
