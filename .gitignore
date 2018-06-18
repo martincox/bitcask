@@ -7,3 +7,5 @@ priv/*.so
 *~
 .local_dialyzer_plt
 log/
+.idea
+*.iml
