@@ -166,11 +166,12 @@ open_file(Filename, append) ->
             Err
     end;
 open_file(Filename, readonly) ->
+    Version = file_version(Filename),
     case bitcask_io:file_open(Filename, [readonly]) of
         {ok, FD} ->
             {ok, #filestate{mode = read_only,
                             filename = Filename, tstamp = file_tstamp(Filename),
-                            fd = FD, ofs = 0}};
+                            fd = FD, ofs = 0, version = Version}};
         {error, Reason} ->
             {error, Reason}
     end.
