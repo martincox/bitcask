@@ -661,7 +661,7 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TST
                           true  -> {tombstone, Key};
                           false -> Key
                       end,
-            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
+            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0, ?CURRENT_FILE_FORMAT_VERSION),
             fold_keys_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
                                {Filename, FTStamp, Offset + TotalSz,
                                 CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION});
@@ -687,7 +687,7 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
                           true  -> {tombstone, Key};
                           false -> Key
                       end,
-            Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0),
+            Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0, ?DEFAULT_FILE_FORMAT_VERSION),
             fold_keys_int_loop(Rest, Fun, Acc, Consumed0 + TotalSz,
                                {Filename, FTStamp, Offset + TotalSz,
                                 CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION});
@@ -747,7 +747,7 @@ fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYS
             KeyPlus = if TombInt == 1 -> {tombstone, Key};
                          true         -> Key
                       end,
-            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
+            Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0, ?CURRENT_FILE_FORMAT_VERSION),
             Consumed = KeySz + ?HINT_RECORD_SZ_V2 + Consumed0,
             fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
         false ->
@@ -770,7 +770,7 @@ fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
             KeyPlus = if TombInt == 1 -> {tombstone, Key};
                          true         -> Key
                       end,
-            Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0),
+            Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0, ?DEFAULT_FILE_FORMAT_VERSION),
             Consumed = KeySz + ?HINT_RECORD_SZ_V1 + Consumed0,
             fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
         false ->

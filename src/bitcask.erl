@@ -1093,7 +1093,7 @@ summary_info(Ref) ->
 %% Internal functions
 %% ===================================================================
 
-summarize(Dirname, {FileId, LiveCount, TotalCount, LiveBytes, TotalBytes, OldestTstamp, NewestTstamp, ExpirationEpoch}) ->
+summarize(Dirname, {FileId, LiveCount, TotalCount, LiveBytes, TotalBytes, OldestTstamp, NewestTstamp, ExpirationEpoch, FileVersion}) ->
     LiveRatio =
         case TotalCount > 0 of
             true ->
@@ -1199,7 +1199,7 @@ scan_key_files([Filename | Rest], KeyDir, Acc, CloseFile, KT) ->
             %% tombstones or data errors.  Otherwise we risk of
             %% reusing the file id for new data.
             _ = bitcask_nifs:increment_file_id(KeyDir, FileTstamp),
-            F = fun({tombstone, K0}, _Tstamp, _TstampExpire, {_Offset, _TotalSz}, _) ->
+            F = fun({tombstone, K0}, _Tstamp, _TstampExpire, {_Offset, _TotalSz}, _, _) ->
                         K = try KT(K0) catch TxErr -> {key_tx_error, TxErr} end,
                         case K of
                             {key_tx_error, KeyTxErr} ->
@@ -1210,7 +1210,7 @@ scan_key_files([Filename | Rest], KeyDir, Acc, CloseFile, KT) ->
                                 bitcask_nifs:keydir_remove(KeyDir, KT(K))
                         end,
                         ok;
-                   (K0, Tstamp, TstampExpire, {Offset, TotalSz}, _) ->
+                   (K0, Tstamp, TstampExpire, {Offset, TotalSz}, _, Version) ->
                         K = try KT(K0) catch TxErr -> {key_tx_error, TxErr} end,
                         case K of
                             {key_tx_error, KeyTxErr} ->
@@ -1225,7 +1225,8 @@ scan_key_files([Filename | Rest], KeyDir, Acc, CloseFile, KT) ->
                                                         Tstamp,
                                                         TstampExpire,
                                                         bitcask_time:tstamp(),
-                                                        false)
+                                                        false,
+                                                        Version)
                         end,
                         ok
                 end,
@@ -1363,7 +1364,7 @@ get_filestate(FileId, Dirname, ReadFiles, Mode) ->
         {value, Filestate} ->
             {Filestate, ReadFiles};
         false ->
-            Fname = bitcask_fileops:mk_filename(Dirname, FileId),
+            Fname = bitcask_fileops:mk_filename(Dirname, FileId, FileVersion),
             case bitcask_fileops:open_file(Fname, Mode) of
                 {error,enoent} ->
                     %% merge removed the file since the keydir_get
@@ -1453,7 +1454,7 @@ merge_single_entry(K, V, Tstamp, TstampExpire, FileId, {_, _, Offset, _} = Pos, 
                     %% one is newer than that one.
                     ok = bitcask_nifs:keydir_put(State#mstate.del_keydir, K,
                                                  FileId, 0, Offset, Tstamp, TstampExpire,
-                                                 bitcask_time:tstamp()),
+                                                 bitcask_time:tstamp(), 0),
                     case State#mstate.merge_coverage of
                         partial ->
                             inner_merge_write(K, V, Tstamp, TstampExpire, FileId, Offset,
@@ -1476,7 +1477,7 @@ merge_single_tombstone(K,V, Tstamp, TstampExpire, FileId, Offset, State) ->
             %% Remember we deleted this already during this merge.
             ok = bitcask_nifs:keydir_put(State#mstate.del_keydir, K,
                                          FileId, 0, Offset, Tstamp, TstampExpire,
-                                         bitcask_time:tstamp()),
+                                         bitcask_time:tstamp(), 0),
             case State#mstate.merge_coverage of
                 partial ->
                     V2 = <<?TOMBSTONE1_STR, FileId:32>>,
@@ -1521,7 +1522,8 @@ merge_single_tombstone(K,V, Tstamp, TstampExpire, FileId, Offset, State) ->
                                    _TotalKeysIncr = 0,
                                    _LiveIncr = 0,
                                    _TotalIncr = TSize,
-                                   _ShouldCreate = 0),
+                                   _ShouldCreate = 0,
+                                   #filestate.version),
                             TFiles2 = lists:keyreplace(
                                         TFile#filestate.filename,
                                         #filestate.filename,
@@ -1598,7 +1600,7 @@ inner_merge_write(K, V, Tstamp, TstampExpire, OldFileId, OldOffset, State) ->
                                              OutFileId,
                                              Size, Offset, Tstamp, TstampExpire,
                                              bitcask_time:tstamp(),
-                                             OldFileId, OldOffset) of
+                                             OldFileId, OldOffset, 0) of
                     ok ->
                         Outfile;
                     already_exists ->
@@ -1614,7 +1616,7 @@ inner_merge_write(K, V, Tstamp, TstampExpire, OldFileId, OldOffset, State) ->
                                OutFileId,
                                Tstamp,
                                0, 0, 0, Size,
-                               _ShouldCreate = 1),
+                               _ShouldCreate = 1, 0),
                         % Still not there, tombstone write is cool
                         Outfile;
                     #bitcask_entry{} ->
@@ -1796,12 +1798,12 @@ do_put(Key, Value, TstampExpire, #bc_state{write_file = WriteFile} = State,
                                 State2
                         end,
                     write_and_keydir_put(State3, Key, Value, Tstamp, TstampExpire, Retries,
-                                         bitcask_time:tstamp(), OldFileId, OldOffset);
+                                         bitcask_time:tstamp(), OldFileId, OldOffset, 0);
 
                 _ ->
                     State3 = State2#bc_state{write_file = WriteFile0},
                     write_and_keydir_put(State3, Key, Value, Tstamp, TstampExpire, Retries,
-                                         bitcask_time:tstamp(), 0, 0)
+                                         bitcask_time:tstamp(), 0, 0, 0)
             end;
 
         tombstone ->
@@ -1822,7 +1824,7 @@ do_put(Key, Value, TstampExpire, #bc_state{write_file = WriteFile} = State,
                             ok = bitcask_nifs:update_fstats(
                                    State2#bc_state.keydir,
                                    bitcask_fileops:file_tstamp(WriteFile2), Tstamp,
-                                   0, 0, 0, TSize, _ShouldCreate = 1),
+                                   0, 0, 0, TSize, _ShouldCreate = 1, 0),
                             case bitcask_nifs:keydir_remove(State2#bc_state.keydir,
                                                             Key, OldTstamp, OldFileId,
                                                             OldOffset) of
@@ -1846,7 +1848,7 @@ do_put(Key, Value, TstampExpire, #bc_state{write_file = WriteFile} = State,
             end
     end.
 
-write_and_keydir_put(State2, Key, Value, Tstamp, TstampExpire, Retries, NowTstamp, OldFileId, OldOffset) ->
+write_and_keydir_put(State2, Key, Value, Tstamp, TstampExpire, Retries, NowTstamp, OldFileId, OldOffset, FileVersion) ->
     case bitcask_fileops:write(State2#bc_state.write_file,
                                Key, Value, Tstamp, TstampExpire) of
         {ok, WriteFile2, Offset, Size} ->
@@ -1854,7 +1856,7 @@ write_and_keydir_put(State2, Key, Value, Tstamp, TstampExpire, Retries, NowTstam
                                          bitcask_fileops:file_tstamp(WriteFile2),
                                          Size, Offset, Tstamp, TstampExpire,
                                          NowTstamp, true,
-                                         OldFileId, OldOffset) of
+                                         OldFileId, OldOffset, FileVersion) of
                 ok ->
                     {ok, State2#bc_state { write_file = WriteFile2 }};
                 already_exists ->
@@ -1977,9 +1979,9 @@ expiry_merge([], _LiveKeyDir, _KT, Acc) ->
     Acc;
 expiry_merge([File | Files], LiveKeyDir, KT, Acc0) ->
     FileId = bitcask_fileops:file_tstamp(File),
-    Fun = fun({tombstone, _}, _, _, _, Acc) ->
+    Fun = fun({tombstone, _}, _, _, _, Acc, _) ->
                   Acc;
-             (K0, Tstamp, _TstampExpiry, {Offset, _TotalSz}, Acc) ->
+             (K0, Tstamp, _TstampExpiry, {Offset, _TotalSz}, Acc, _) ->
                   K = try KT(K0) catch TxErr -> {key_tx_error, TxErr} end,
                   case K of
                       {key_tx_error, KeyTxErr} ->
@@ -2063,6 +2065,18 @@ default_dataset() ->
 a0_test_() ->
     {timeout, 60, fun a0_test2/0}.
 
+%% read_old_format_data_file_test() ->
+%%     os:cmd("rm -rf /tmp/bc.old.format"),
+%%     os:cmd("mkdir /tmp/bc.old.format"),
+%%     Key = <<"123">>,
+%%     KeySz = size(Key),
+%%     Value = <<"abc">>,
+%%     ValueSz = size(Value),
+%%     Bytes = [<<2147483647:?TSTAMPFIELD>>, <<KeySz:?KEYSIZEFIELD>>, 
+%%              <<ValueSz:?VALSIZEFIELD>>, Key, Value],
+%%     BytesWithCrc32 = [<<(erlang:crc32(Bytes))?CRCSIZEFIELD>>, Bytes],
+%%     ok = file:write_file("/tmp/bc.old.format/1.bitcask.data"),
+    
 a0_test2() ->
     code:add_pathz("../ebin"),
     application:start(erlang),
@@ -2971,12 +2985,12 @@ truncated_hintfile_test() ->
     try
         application:set_env(bitcask, require_hint_crc, true),
         {error, {incomplete_hint, 4}} = bitcask_fileops:fold_keys(
-                                          FS, fun(_, _, _, _, Acc) -> Acc + 1 end,
+                                          FS, fun(_, _, _, _, Acc, _) -> Acc + 1 end,
                                           0, hintfile),
 
         application:set_env(bitcask, require_hint_crc, false),
 
-        100 = bitcask_fileops:fold_keys(FS, fun(_, _, _, _, Acc) -> Acc + 1 end,
+        100 = bitcask_fileops:fold_keys(FS, fun(_, _, _, _, Acc, _) -> Acc + 1 end,
                                         0, hintfile),
         ok
     after

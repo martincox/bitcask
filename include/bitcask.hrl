@@ -18,7 +18,7 @@
                     l_ofs=0 :: non_neg_integer(),  % Last offset written to data file
                     l_hbytes=0 :: non_neg_integer(),% Last # bytes written to hint file
                     l_hintcrc=0 :: non_neg_integer(),
-                    version=1 :: non_neg_integer()}). % CRC-32 of current hint prior to last write
+                    version :: non_neg_integer()}). % CRC-32 of current hint prior to last write
 
 -record(file_status, { filename :: string(),
                       fragmented :: integer(),
@@ -27,7 +27,7 @@
                       oldest_tstamp :: integer(),
                       newest_tstamp :: integer(),
                       expiration_epoch :: non_neg_integer(),
-                      version=1 :: non_neg_integer() }).
+                      version :: non_neg_integer() }).
 
 
 -define(FMT(Str, Args), lists:flatten(io_lib:format(Str, Args))).
