@@ -363,7 +363,7 @@ fold_keys(Ref, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                 Acc;
             false ->
                 case BCEntry#bitcask_entry.total_sz -
-                            (?HEADER_SIZE + size(Key)) of
+                            (?HEADER_SIZE_V2 + size(Key)) of
                     Ss when ?IS_TOMBSTONE_SIZE(Ss) ->
                         %% might be a deleted record, so check
                         case ?MODULE:get(Ref, Key) of
@@ -3512,10 +3512,10 @@ total_byte_stats_test2() ->
                          || #file_status{filename=File,
                                          total_bytes=Size} <- FStats]),
     ExpFiles1 =
-        [{Dir ++ "/1.1.bitcask.data", 2 + 1 + ?HEADER_SIZE},
-         {Dir ++ "/2.1.bitcask.data", 2 + 1 + ?HEADER_SIZE},
-         {Dir ++ "/3.1.bitcask.data", 2 + ?TOMBSTONE2_SIZE + ?HEADER_SIZE},
-         {Dir ++ "/4.1.bitcask.data", 2 + 1 + ?HEADER_SIZE}],
+        [{Dir ++ "/1.1.bitcask.data", 2 + 1 + ?HEADER_SIZE_V2},
+         {Dir ++ "/2.1.bitcask.data", 2 + 1 + ?HEADER_SIZE_V2},
+         {Dir ++ "/3.1.bitcask.data", 2 + ?TOMBSTONE2_SIZE + ?HEADER_SIZE_V2},
+         {Dir ++ "/4.1.bitcask.data", 2 + 1 + ?HEADER_SIZE_V2}],
     ?assertEqual(ExpFiles1, Files1),
     bitcask:close(B).
 

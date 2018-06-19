@@ -49,7 +49,8 @@
 
 -include("bitcask.hrl").
 
--define(HINT_RECORD_SZ, 22). % Tstamp(4) + KeySz(2) + TotalSz(4) + Offset(8)
+-define(HINT_RECORD_SZ_V1, 18). % Tstamp(4) + KeySz(2) + TotalSz(4) + Offset(8)
+-define(HINT_RECORD_SZ_V2, 22). % Tstamp(4) + KeySz(2) + TotalSz(4) + Offset(8) + Expire (4)
 
 -ifdef(PULSE).
 -compile({parse_transform, pulse_instrument}).
@@ -131,6 +132,7 @@ open_file(Filename) ->
     open_file(Filename, readonly).
 
 open_file(Filename, append) ->
+    Version = file_version(Filename),
     case bitcask_io:file_open(Filename, []) of
         {ok, FD} ->
             case bitcask_io:file_position(FD, {eof, 0}) of
@@ -140,7 +142,7 @@ open_file(Filename, append) ->
                     _ = file:delete(Filename),
                     {error, enoent};
                 {ok, Ofs} ->
-                    case reopen_hintfile(Filename) of
+                    case reopen_hintfile(Filename, Version) of
                         {error, enoent} ->
                             bitcask_io:file_close(FD),
                             {error, enoent};
@@ -156,7 +158,7 @@ open_file(Filename, append) ->
                                         hintfd = HintFD,
                                         hintcrc = HintCRC,
                                         ofs = Ofs,
-                                        version = file_version(Filename)
+                                        version = Version
                                        }}
                     end
             end;
@@ -174,9 +176,9 @@ open_file(Filename, readonly) ->
     end.
 
 % Re-open hintfile for appending.
--spec reopen_hintfile(string() | #filestate{}) ->
+-spec reopen_hintfile(string() | #filestate{}, pos_integer()) ->
     {error, enoent} | {HintFD::port() | undefined, CRC :: non_neg_integer()}.
-reopen_hintfile(Filename) ->
+reopen_hintfile(Filename, Version) ->
     case  (catch open_hint_file(Filename, [])) of
         couldnt_open_hintfile ->
             {undefined, 0};
@@ -190,24 +192,24 @@ reopen_hintfile(Filename) ->
                     _ = file:delete(HintFilename),
                     {error, enoent};
                 {ok, _FileSize} ->
-                    prepare_hintfile_for_append(HintFD)
+                    prepare_hintfile_for_append(HintFD, Version)
             end
     end.
 
 % Removes the final CRC record so more records can be added to the file.
--spec prepare_hintfile_for_append(HintFD :: port()) ->
+-spec prepare_hintfile_for_append(HintFD :: port(), pos_integer()) ->
     {HintFD :: port() | undefined, CRC :: non_neg_integer()}.
-prepare_hintfile_for_append(HintFD) ->
+prepare_hintfile_for_append(HintFD, Version) ->
     case bitcask_io:file_position(HintFD,
-                                  {eof, -?HINT_RECORD_SZ}) of
+                                  {eof, -?HINT_RECORD_SZ_V2}) of
         {ok, _} ->
-            case read_crc(HintFD) of
+            case read_crc(HintFD, Version) of
                 error ->
                     bitcask_io:file_close(HintFD),
                     {undefined, 0};
                 HintCRC ->
                     bitcask_io:file_position(HintFD,
-                                             {eof, -?HINT_RECORD_SZ}),
+                                             {eof, -?HINT_RECORD_SZ_V2}),
                     bitcask_io:file_truncate(HintFD),
                     {HintFD, HintCRC}
             end;
@@ -471,8 +473,12 @@ file_version(#filestate{version=Version}) ->
     Version;
 file_version(Filename) when is_list(Filename) ->
     BaseFileName = filename:basename(Filename),
-    [_Tstamp, Version|_] = re:split(BaseFileName,"[.]",[{return,list}]),
-    list_to_integer(Version).
+    %% Check if the filename is comprised of 4 parts, meaning we have a version. If
+    %% not, return the default format version.
+    case re:split(BaseFileName,"[.]",[{return,list}]) of
+        [_Tstamp, Version, _, _] -> list_to_integer(Version);
+        _ -> ?DEFAULT_FILE_FORMAT_VERSION
+    end.
 
 -spec check_write(fresh | #filestate{}, binary(), non_neg_integer(), integer()) ->
       fresh | wrap | ok.
@@ -480,7 +486,7 @@ check_write(fresh, _Key, _ValSize, _MaxSize) ->
     %% for the very first write, special-case
     fresh;
 check_write(#filestate { ofs = Offset }, Key, ValSize, MaxSize) ->
-    Size = ?HEADER_SIZE + size(Key) + ValSize,
+    Size = ?HEADER_SIZE_V2 + size(Key) + ValSize,
     case (Offset + Size) > MaxSize of
         true ->
             wrap;
@@ -493,14 +499,15 @@ has_hintfile(#filestate { filename = Fname }) ->
 
 %% Return true if there is a hintfile and it has
 %% a valid CRC check
-has_valid_hintfile(State) ->
+has_valid_hintfile(State = #filestate{version = Version}) ->
     HintFile = hintfile_name(State),
     case bitcask_io:file_open(HintFile, [readonly, read_ahead]) of
         {ok, HintFd} ->
             try
                 {ok, HintI} = read_file_info(HintFile),
                 HintSize = HintI#file_info.size,
-                hintfile_validate_loop(HintFd, 0, HintSize)
+
+                hintfile_validate_loop(HintFd, 0, HintSize, Version)
             after
                 bitcask_io:file_close(HintFd)
             end;
@@ -508,15 +515,19 @@ has_valid_hintfile(State) ->
             false
     end.
 
-hintfile_validate_loop(Fd, CRC0, Rem) ->
+hintfile_validate_loop(Fd, CRC0, Rem, 1) ->
+    hintfile_validate_loop(Fd, CRC0, Rem, 1, ?HINT_RECORD_SZ_V2);
+hintfile_validate_loop(Fd, CRC0, Rem, 0) ->
+    hintfile_validate_loop(Fd, CRC0, Rem, 0, ?HINT_RECORD_SZ_V1).
+hintfile_validate_loop(Fd, CRC0, Rem, Version, HintRecordSize) ->
     {ReadLen, HasCRC} =
         case Rem =< ?CHUNK_SIZE of
             true ->
-                case Rem < ?HINT_RECORD_SZ of
+                case Rem < HintRecordSize of
                     true ->
                         {0, error};
                     false ->
-                        {Rem - ?HINT_RECORD_SZ, true}
+                        {Rem - HintRecordSize, true}
                 end;
             false ->
                 {?CHUNK_SIZE, false}
@@ -526,23 +537,33 @@ hintfile_validate_loop(Fd, CRC0, Rem) ->
         {ok, Bytes} ->
             case HasCRC of
                 true ->
-                    ExpectCRC = read_crc(Fd),
+                    ExpectCRC = read_crc(Fd, Version),
                     CRC = erlang:crc32(CRC0, Bytes),
                     ExpectCRC =:= CRC;
                 false ->
                     hintfile_validate_loop(Fd,
                                            erlang:crc32(CRC0, Bytes),
-                                           Rem - ReadLen);
+                                           Rem - ReadLen, Version);
                 error ->
                     false
             end;
         _ -> false
     end.
 
-read_crc(Fd) ->
-    case bitcask_io:file_read(Fd, ?HINT_RECORD_SZ) of
+read_crc(Fd, ?CURRENT_FILE_FORMAT_VERSION) ->
+    case bitcask_io:file_read(Fd, ?HINT_RECORD_SZ_V2) of
         {ok, <<0:?TSTAMPFIELD,
                0:?TSTAMPFIELD,
+               0:?KEYSIZEFIELD,
+               ExpectCRC:?TOTALSIZEFIELD,
+               _TombInt:?TOMBSTONEFIELD_V2,
+               (?MAXOFFSET_V2):?OFFSETFIELD_V2>>} ->
+            ExpectCRC;
+        _ -> error
+    end;
+read_crc(Fd, ?DEFAULT_FILE_FORMAT_VERSION) ->
+    case bitcask_io:file_read(Fd, ?HINT_RECORD_SZ_V1) of
+        {ok, <<0:?TSTAMPFIELD,
                0:?KEYSIZEFIELD,
                ExpectCRC:?TOTALSIZEFIELD,
                _TombInt:?TOMBSTONEFIELD_V2,
@@ -565,7 +586,7 @@ fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFI
                 Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
               Fun, Acc0, Consumed0,
               {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
-    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE_V2,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
         Crc32 ->
@@ -587,7 +608,7 @@ fold_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
                 Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
               Fun, Acc0, Consumed0,
               {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
-    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE_V1,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
         Crc32 ->
@@ -630,7 +651,7 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD, TstampExpire:?TST
                      Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
                    Fun, Acc0, Consumed0,
                     {Filename, FTStamp, Offset, CrcSkipCount, ?CURRENT_FILE_FORMAT_VERSION}) ->
-    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE_V2,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
         ValueSz:?VALSIZEFIELD>>, Key, Value]) of
         Crc32 ->
@@ -656,7 +677,7 @@ fold_keys_int_loop(<<Crc32:?CRCSIZEFIELD, Tstamp:?TSTAMPFIELD,
                      Key:KeySz/bytes, Value:ValueSz/bytes, Rest/binary>>,
                    Fun, Acc0, Consumed0,
                    {Filename, FTStamp, Offset, CrcSkipCount, ?DEFAULT_FILE_FORMAT_VERSION}) ->
-    TotalSz = KeySz + ValueSz + ?HEADER_SIZE,
+    TotalSz = KeySz + ValueSz + ?HEADER_SIZE_V1,
     case erlang:crc32([<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          ValueSz:?VALSIZEFIELD>>, Key, Value]) of
         Crc32 ->
@@ -708,12 +729,12 @@ fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
                      _ExpectCRC:?TOTALSIZEFIELD,
                      _TombInt:?TOMBSTONEFIELD_V2, (?MAXOFFSET_V2):?OFFSETFIELD_V2>>,
                    _Fun, Acc, Consumed, {_DataSize, _HintFile, ?CURRENT_FILE_FORMAT_VERSION}) ->
-    {done, Acc, Consumed + ?HINT_RECORD_SZ};
+    {done, Acc, Consumed + ?HINT_RECORD_SZ_V2};
 fold_hintfile_loop(<<0:?TSTAMPFIELD, 0:?KEYSIZEFIELD,
                 _ExpectCRC:?TOTALSIZEFIELD,
                 _TombInt:?TOMBSTONEFIELD_V2, (?MAXOFFSET_V2):?OFFSETFIELD_V2>>,
                 _Fun, Acc, Consumed, {_DataSize, _HintFile, ?DEFAULT_FILE_FORMAT_VERSION}) ->
-    {done, Acc, Consumed + ?HINT_RECORD_SZ};
+    {done, Acc, Consumed + ?HINT_RECORD_SZ_V1};
 fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
     TotalSz:?TOTALSIZEFIELD,
     TombInt:?TOMBSTONEFIELD_V2, Offset:?OFFSETFIELD_V2,
@@ -726,7 +747,7 @@ fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, TstampExpire:?TSTAMPFIELD, KeySz:?KEYS
                          true         -> Key
                       end,
             Acc = Fun(KeyPlus, Tstamp, TstampExpire, PosInfo, Acc0),
-            Consumed = KeySz + ?HINT_RECORD_SZ + Consumed0,
+            Consumed = KeySz + ?HINT_RECORD_SZ_V2 + Consumed0,
             fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
         false ->
             error_logger:warning_msg("Hintfile '~s' contains pointer ~p ~p "
@@ -749,7 +770,7 @@ fold_hintfile_loop(<<Tstamp:?TSTAMPFIELD, KeySz:?KEYSIZEFIELD,
                          true         -> Key
                       end,
             Acc = Fun(KeyPlus, Tstamp, ?DEFAULT_TSTAMP_EXPIRE, PosInfo, Acc0),
-            Consumed = KeySz + ?HINT_RECORD_SZ + Consumed0,
+            Consumed = KeySz + ?HINT_RECORD_SZ_V1 + Consumed0,
             fold_hintfile_loop(Rest, Fun, Acc, Consumed, Args);
         false ->
             error_logger:warning_msg("Hintfile '~s' contains pointer ~p ~p "
