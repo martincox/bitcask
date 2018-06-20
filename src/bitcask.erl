@@ -1093,7 +1093,7 @@ summary_info(Ref) ->
 %% Internal functions
 %% ===================================================================
 
-summarize(Dirname, {FileId, LiveCount, TotalCount, LiveBytes, TotalBytes, OldestTstamp, NewestTstamp, ExpirationEpoch, FileVersion}) ->
+summarize(Dirname, {FileId, LiveCount, TotalCount, LiveBytes, TotalBytes, OldestTstamp, NewestTstamp, ExpirationEpoch, _FileVersion}) ->
     LiveRatio =
         case TotalCount > 0 of
             true ->
@@ -1364,7 +1364,7 @@ get_filestate(FileId, Dirname, ReadFiles, Mode) ->
         {value, Filestate} ->
             {Filestate, ReadFiles};
         false ->
-            Fname = bitcask_fileops:mk_filename(Dirname, FileId, FileVersion),
+            Fname = bitcask_fileops:mk_filename(Dirname, FileId),
             case bitcask_fileops:open_file(Fname, Mode) of
                 {error,enoent} ->
                     %% merge removed the file since the keydir_get

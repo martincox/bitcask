@@ -505,7 +505,7 @@ keydir_basic_test2() ->
     {ok, Ref} = keydir_new(),
     ok = keydir_put(Ref, <<"abc">>, 0, 1234, 0, 1, 0, bitcask_time:tstamp(), 0),
 
-    {1, 3, [{0, 1, 1, 1234, 1234, 1, 1, _}],
+    {1, 3, [{0, 1, 1, 1234, 1234, 1, 1, _, _}],
      {0, 0, false, _},_} = keydir_info(Ref),
 
     E = keydir_get(Ref, <<"abc">>),
