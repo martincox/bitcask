@@ -37,6 +37,7 @@
          fold/3,
          fold_keys/3, fold_keys/4,
          mk_filename/2,
+         mk_filename/3,
          filename/1,
          hintfile_name/1,
          file_tstamp/1,
@@ -447,9 +448,16 @@ fold_keys(State, Fun, Acc, recovery, _, false) ->
 
 -spec mk_filename(string(), integer()) -> string().
 mk_filename(Dirname, Tstamp) ->
+    mk_filename(Dirname, Tstamp, ?CURRENT_FILE_FORMAT_VERSION).
+
+-spec mk_filename(string(), integer(), pos_integer()) -> string().
+mk_filename(Dirname, Tstamp, ?CURRENT_FILE_FORMAT_VERSION) ->
     filename:join(Dirname,
                   lists:concat([integer_to_list(Tstamp),".",
-                                integer_to_list(?CURRENT_FILE_FORMAT_VERSION), ".bitcask.data"])).
+                                integer_to_list(?CURRENT_FILE_FORMAT_VERSION), ".bitcask.data"]));
+mk_filename(Dirname, Tstamp, ?DEFAULT_FILE_FORMAT_VERSION) ->
+    filename:join(Dirname,
+                  lists:concat([integer_to_list(Tstamp),".bitcask.data"])).
 
 -spec filename(#filestate{}) -> string().
 filename(#filestate { filename = Fname }) ->

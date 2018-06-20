@@ -358,7 +358,7 @@ update_fstats(Ref, FileId, Tstamp,
               LiveIncr, TotalIncr, ShouldCreate) ->
     update_fstats(Ref, FileId, Tstamp,
               LiveKeyIncr, TotalKeyIncr,
-              LiveIncr, TotalIncr, ShouldCreate, 0).
+              LiveIncr, TotalIncr, ShouldCreate, 1).
 -spec update_fstats(reference(), non_neg_integer(), non_neg_integer(),
                     integer(), integer(), integer(), integer(), integer(), integer()) ->
     ok.

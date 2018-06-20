@@ -218,7 +218,7 @@ regression_gh82_body() ->
     bitcask:delete(Reference, <<"key_to_delete">>),
     [ bitcask:put(Reference, term_to_binary(X), <<1:(8 * 1024 * 100)>>) || X <- lists:seq(1, 3000)],
     timer:sleep(1000 + 1000),
-    bitcask_merge_worker:merge(Dir, regression_gh82_opts(), {[Dir ++ "/2.bitcask.data"], []}),
+    bitcask_merge_worker:merge(Dir, regression_gh82_opts(), {[Dir ++ "/2.1.bitcask.data"], []}),
     poll_merge_worker(),
     timer:sleep(2*1000),
     bitcask:close(Reference),
@@ -542,7 +542,7 @@ fork_merge(H, Dir) ->
   end.
 
 merge_these(_H, TestDir, Ids) ->
-    Files = [lists:flatten(io_lib:format("~s/~w.bitcask.data", [TestDir,Id])) ||
+    Files = [lists:flatten(io_lib:format("~s/~w.1.bitcask.data", [TestDir,Id])) ||
                 Id <- Ids],
     bitcask:merge(TestDir, [], Files).
 
