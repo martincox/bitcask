@@ -26,6 +26,7 @@
          close_write_file/1,
          get/2,
          put/3,
+         put/5,
          delete/2,
          sync/1,
          list_keys/1,
