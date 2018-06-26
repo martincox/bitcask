@@ -3,8 +3,10 @@
                          file_id :: integer(),
                          total_sz :: integer(),
                          offset :: integer() | binary(), 
-                         tstamp :: integer() }).
+                         tstamp :: integer(),
+                         tstamp_expire :: integer()}).
 
+-record(keymeta, { tstamp_expire :: integer() }).
 
 %% @type filestate().
 -record(filestate, {mode :: 'read_only' | 'read_write',     % File mode: read_only, read_write
@@ -62,3 +64,5 @@
 -define(CHUNK_SIZE, 65535).
 -define(MIN_CHUNK_SIZE, 1024).
 -define(MAX_CHUNK_SIZE, 134217728).
+
+-define(DEFAULT_TSTAMP_EXPIRE, 2000000000).

@@ -238,7 +238,8 @@ get(Ref, Key, TryNum) ->
         not_found ->
             not_found;
         E when is_record(E, bitcask_entry) ->
-            case E#bitcask_entry.tstamp < expiry_time(State#bc_state.opts) of
+            case E#bitcask_entry.tstamp < expiry_time(State#bc_state.opts) orelse
+                 E#bitcask_entry.tstamp_expire < bitcask_time:tstamp() of
                 true ->
                     %% Expired entry; remove from keydir
                     case bitcask_nifs:keydir_remove(State#bc_state.keydir, Key,
@@ -283,6 +284,9 @@ get(Ref, Key, TryNum) ->
 
 %% @doc Store a key and value in a bitcase datastore.
 put(Ref, Key, Value) ->
+    put(Ref, Key, Key, Value, ?DEFAULT_TSTAMP_EXPIRE).
+
+put(Ref, KeyDirKey, BinKey, Value, TstampExpire) ->
     #bc_state { write_file = WriteFile } = State = get_state(Ref),
 
     %% Make sure we have a file open to write
@@ -293,9 +297,8 @@ put(Ref, Key, Value) ->
         _ ->
             ok
     end,
-
     try
-        {Ret, State1} = do_put(Key, Value, State,
+        {Ret, State1} = do_put(KeyDirKey, BinKey, Value, TstampExpire, State,
                                ?DIABOLIC_BIG_INT, undefined),
         put_state(Ref, State1),
         Ret
@@ -349,7 +352,8 @@ fold_keys(Ref, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
     ExpiryTime = expiry_time((get_state(Ref))#bc_state.opts),
     RealFun = fun(BCEntry, Acc) ->
         Key = BCEntry#bitcask_entry.key,
-        case BCEntry#bitcask_entry.tstamp < ExpiryTime of
+        case BCEntry#bitcask_entry.tstamp < ExpiryTime orelse
+             BCEntry#bitcask_entry.tstamp_expire < bitcask_time:tstamp() of
             true ->
                 Acc;
             false ->
@@ -404,13 +408,15 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                     {ok, Files, FoldEpoch} ->
                         ExpiryTime = expiry_time(State#bc_state.opts),
                         SubFun = fun(K0,V,TStamp,{_FN,FTS,Offset,_Sz},Acc) ->
-                                         K = try
+                                         Now = bitcask_time:tstamp(),
+                                         {K, KeyMeta = #keymeta{}} = try
                                                  KT(K0)
                                              catch
                                                  KeyTxErr ->
                                                      {key_tx_error, {K0, KeyTxErr}}
                                              end,
-                                         case {K, (TStamp < ExpiryTime)} of
+                                         case {K, (TStamp < ExpiryTime orelse 
+                                                   KeyMeta#keymeta.tstamp_expire < Now)} of
                                              {{key_tx_error, TxErr}, _} ->
                                                  error_logger:error_msg("Error converting key ~p: ~p", [K0, TxErr]),
                                                  Acc;
@@ -1196,8 +1202,8 @@ scan_key_files([Filename | Rest], KeyDir, Acc, CloseFile, KT) ->
                                 error_logger:error_msg("Invalid key on load ~p: ~p",
                                                        [K0, KeyTxErr]),
                                 ok;
-                            _ ->
-                                bitcask_nifs:keydir_remove(KeyDir, KT(K))
+                            {K1, _KeyMeta = #keymeta{}} ->
+                                bitcask_nifs:keydir_remove(KeyDir, K1)
                         end,
                         ok;
                    (K0, Tstamp, {Offset, TotalSz}, _) ->
@@ -1206,13 +1212,14 @@ scan_key_files([Filename | Rest], KeyDir, Acc, CloseFile, KT) ->
                             {key_tx_error, KeyTxErr} ->
                                 error_logger:error_msg("Invalid key on load ~p: ~p",
                                                        [K0, KeyTxErr]);
-                            _ ->
+                            {K1, KeyMeta = #keymeta{}} ->
                                 bitcask_nifs:keydir_put(KeyDir,
-                                                        K,
+                                                        K1,
                                                         FileTstamp,
                                                         TotalSz,
                                                         Offset,
                                                         Tstamp,
+                                                        KeyMeta#keymeta.tstamp_expire,
                                                         bitcask_time:tstamp(),
                                                         false)
                         end,
@@ -1389,8 +1396,8 @@ merge_files(#mstate {  dirname = Dirname,
                         error_logger:error_msg("Invalid key on merge ~p: ~p",
                                                [K0, TxErr]),
                         State0;
-                    _ ->
-                        merge_single_entry(K, V, Tstamp, FileId, Pos, State0)
+                    {K1, KeyMeta = #keymeta{}} ->
+                        merge_single_entry(K1, V, Tstamp, KeyMeta#keymeta.tstamp_expire, FileId, Pos, State0)
                 end
         end,
     State2 = try bitcask_fileops:fold(File, F, State) of
@@ -1405,9 +1412,9 @@ merge_files(#mstate {  dirname = Dirname,
              end,
     merge_files(State2#mstate { input_files = Rest }).
 
-merge_single_entry(K, V, Tstamp, FileId, {_, _, Offset, _} = Pos, State) ->
-    case out_of_date(State, K, Tstamp, FileId, Pos, State#mstate.expiry_time,
-                     false,
+merge_single_entry(K, V, Tstamp, TstampExpire, FileId, {_, _, Offset, _} = Pos, State) ->
+    case out_of_date(State, K, Tstamp, TstampExpire, FileId, Pos, State#mstate.expiry_time, 
+                     bitcask_time:tstamp(), false,
                      [State#mstate.live_keydir, State#mstate.del_keydir]) of
         true ->
             %% Value in keydir is newer, so drop ... except! ...
@@ -1615,7 +1622,7 @@ inner_merge_write(K, V, Tstamp, OldFileId, OldOffset, State) ->
     State1#mstate { out_file = Outfile2 }.
 
 
-out_of_date(_State, _Key, _Tstamp, _FileId, _Pos, _ExpiryTime,
+out_of_date(_State, _Key, _Tstamp, _TstampExpire, _FileId, _Pos, _ExpiryTime, _Now,
             EverFound, []) ->
     %% if we ever found it, and none of the entries were out of date,
     %% then it's not out of date
@@ -1623,15 +1630,15 @@ out_of_date(_State, _Key, _Tstamp, _FileId, _Pos, _ExpiryTime,
         true -> false;
         false -> not_found
     end;
-out_of_date(_State, _Key, Tstamp, _FileId, _Pos, ExpiryTime,
+out_of_date(_State, _Key, Tstamp, TstampExpire, _FileId, _Pos, ExpiryTime, Now,
             _EverFound, _KeyDirs)
-  when Tstamp < ExpiryTime ->
+  when Tstamp < ExpiryTime orelse TstampExpire < Now ->
     expired;
-out_of_date(State, Key, Tstamp, FileId, {_,_,Offset,_} = Pos,
-            ExpiryTime, EverFound, [KeyDir|Rest]) ->
+out_of_date(State, Key, Tstamp, TstampExpire, FileId, {_,_,Offset,_} = Pos,
+            ExpiryTime, Now, EverFound, [KeyDir|Rest]) ->
     case bitcask_nifs:keydir_get(KeyDir, Key) of
         not_found ->
-            out_of_date(State, Key, Tstamp, FileId, Pos, ExpiryTime,
+            out_of_date(State, Key, Tstamp, TstampExpire, FileId, Pos, ExpiryTime, Now,
                         EverFound, Rest);
 
         E when is_record(E, bitcask_entry) ->
@@ -1654,8 +1661,8 @@ out_of_date(State, Key, Tstamp, FileId, {_,_,Offset,_} = Pos,
                                     true;
                                 false ->
                                     out_of_date(
-                                      State, Key, Tstamp, FileId, Pos,
-                                      ExpiryTime, true, Rest)
+                                      State, Key, Tstamp, TstampExpire, FileId, Pos,
+                                      ExpiryTime, Now, true, Rest)
                             end;
 
                         true ->
@@ -1673,14 +1680,14 @@ out_of_date(State, Key, Tstamp, FileId, {_,_,Offset,_} = Pos,
                             %% Thus, we are NOT out of date. Check the
                             %% rest of the keydirs to ensure this
                             %% holds true.
-                            out_of_date(State, Key, Tstamp, FileId, Pos,
-                                        ExpiryTime, true, Rest)
+                            out_of_date(State, Key, Tstamp, TstampExpire, FileId, Pos,
+                                        ExpiryTime, Now, true, Rest)
                     end;
 
                 E#bitcask_entry.tstamp < Tstamp ->
                     %% Not out of date -- check rest of the keydirs
-                    out_of_date(State, Key, Tstamp, FileId, Pos,
-                                ExpiryTime, true, Rest);
+                    out_of_date(State, Key, Tstamp, TstampExpire, FileId, Pos,
+                                ExpiryTime, Now, true, Rest);
 
                 true ->
                     %% Out of date!
@@ -1715,9 +1722,9 @@ readable_and_setuid_files(Dirname) ->
 
 %% Internal put - have validated that the file is opened for write
 %% and looked up the state at this point
-do_put(_Key, _Value, State, 0, LastErr) ->
+do_put(_KeyDirKey, _BinKey, _Value, _TstampExpire, State, 0, LastErr) ->
     {{error, LastErr}, State};
-do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
+do_put(KeyDirKey, BinKey, Value, TstampExpire, #bc_state{write_file = WriteFile} = State,
        Retries, _LastErr) ->
     ValSize =
         case Value of
@@ -1727,7 +1734,7 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
                 size(Value)
         end,
     State2 =
-        case bitcask_fileops:check_write(WriteFile, Key, ValSize,
+        case bitcask_fileops:check_write(WriteFile, BinKey, ValSize,
                                          State#bc_state.max_file_size) of
             wrap ->
                 %% Time to start a new write file. Note that we do not
@@ -1766,11 +1773,11 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
     case Value of
         BinValue when is_binary(BinValue) ->
             % Replacing value from a previous file, so write tombstone for it.
-            case bitcask_nifs:keydir_get(State2#bc_state.keydir, Key) of
+            case bitcask_nifs:keydir_get(State2#bc_state.keydir, KeyDirKey) of
                 #bitcask_entry{file_id=OldFileId}
                   when OldFileId > WriteFileId ->
                     State3 = wrap_write_file(State2),
-                    do_put(Key, Value, State3, Retries - 1, already_exists);
+                    do_put(KeyDirKey, BinKey, Value, TstampExpire, State3, Retries - 1, already_exists);
 
                 #bitcask_entry{file_id=OldFileId,offset=OldOffset} ->
                     State3 =
@@ -1778,42 +1785,42 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
                             true ->
                                 PrevTomb = <<?TOMBSTONE2_STR, OldFileId:32>>,
                                 {ok, WriteFile1, _, _} =
-                                    bitcask_fileops:write(WriteFile0, Key,
+                                    bitcask_fileops:write(WriteFile0, BinKey,
                                                           PrevTomb, Tstamp),
                                 State2#bc_state{write_file = WriteFile1};
                             false ->
                                 State2
                         end,
-                    write_and_keydir_put(State3, Key, Value, Tstamp, Retries,
+                    write_and_keydir_put(State3, KeyDirKey, BinKey, Value, TstampExpire, Tstamp, Retries,
                                          bitcask_time:tstamp(), OldFileId, OldOffset);
 
                 _ ->
                     State3 = State2#bc_state{write_file = WriteFile0},
-                    write_and_keydir_put(State3, Key, Value, Tstamp, Retries,
+                    write_and_keydir_put(State3, KeyDirKey, BinKey, Value, TstampExpire, Tstamp, Retries,
                                          bitcask_time:tstamp(), 0, 0)
             end;
 
         tombstone ->
-            case bitcask_nifs:keydir_get(State2#bc_state.keydir, Key) of
+            case bitcask_nifs:keydir_get(State2#bc_state.keydir, KeyDirKey) of
                 not_found ->
                     {ok, State2};
                 #bitcask_entry{file_id=OldFileId} when OldFileId > WriteFileId ->
                     % A merge wrote this key in a file > current write file
                     % Start a new write file > the merge output file
                     State3 = wrap_write_file(State2),
-                    do_put(Key, Value, State3, Retries - 1, already_exists);
+                    do_put(KeyDirKey, BinKey, Value, TstampExpire, State3, Retries - 1, already_exists);
                 #bitcask_entry{tstamp=OldTstamp, file_id=OldFileId,
                                offset=OldOffset} ->
                     Tombstone = <<?TOMBSTONE2_STR, OldFileId:32>>,
                     case bitcask_fileops:write(State2#bc_state.write_file,
-                                               Key, Tombstone, Tstamp) of
+                                                BinKey, Tombstone, Tstamp) of
                         {ok, WriteFile2, _, TSize} ->
                             ok = bitcask_nifs:update_fstats(
                                    State2#bc_state.keydir,
                                    bitcask_fileops:file_tstamp(WriteFile2), Tstamp,
                                    0, 0, 0, TSize, _ShouldCreate = 1),
                             case bitcask_nifs:keydir_remove(State2#bc_state.keydir,
-                                                            Key, OldTstamp, OldFileId,
+                                                            KeyDirKey, OldTstamp, OldFileId,
                                                             OldOffset) of
                                 already_exists ->
                                     %% Merge updated the keydir after tombstone
@@ -1824,7 +1831,7 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
                                     State3 = wrap_write_file(
                                                State2#bc_state {
                                                  write_file = WriteFile3 }),
-                                    do_put(Key, Value, State3,
+                                    do_put(KeyDirKey, BinKey, Value, TstampExpire, State3,
                                            Retries - 1, already_exists);
                                 ok ->
                                     {ok, State2#bc_state { write_file = WriteFile2 }}
@@ -1835,13 +1842,14 @@ do_put(Key, Value, #bc_state{write_file = WriteFile} = State,
             end
     end.
 
-write_and_keydir_put(State2, Key, Value, Tstamp, Retries, NowTstamp, OldFileId, OldOffset) ->
+write_and_keydir_put(State2, KeyDirKey, BinKey, Value, TstampExpire, Tstamp, Retries, 
+                     NowTstamp, OldFileId, OldOffset) ->
     case bitcask_fileops:write(State2#bc_state.write_file,
-                               Key, Value, Tstamp) of
+                               BinKey, Value, Tstamp) of
         {ok, WriteFile2, Offset, Size} ->
-            case bitcask_nifs:keydir_put(State2#bc_state.keydir, Key,
+            case bitcask_nifs:keydir_put(State2#bc_state.keydir, KeyDirKey,
                                          bitcask_fileops:file_tstamp(WriteFile2),
-                                         Size, Offset, Tstamp,
+                                         Size, Offset, Tstamp, TstampExpire,
                                          NowTstamp, true,
                                          OldFileId, OldOffset) of
                 ok ->
@@ -1860,7 +1868,7 @@ write_and_keydir_put(State2, Key, Value, Tstamp, Retries, NowTstamp, OldFileId, 
                     {ok, WriteFile3} = bitcask_fileops:un_write(WriteFile2),
                     State3 = wrap_write_file(
                                State2#bc_state { write_file = WriteFile3 }),
-                    do_put(Key, Value, State3, Retries - 1, already_exists)
+                    do_put(KeyDirKey, BinKey, Value, TstampExpire, State3, Retries - 1, already_exists)
             end;
         Error2 ->
             throw({unrecoverable, Error2, State2})
@@ -1974,8 +1982,8 @@ expiry_merge([File | Files], LiveKeyDir, KT, Acc0) ->
                       {key_tx_error, KeyTxErr} ->
                           error_logger:error_msg("Invalid key on merge ~p: ~p",
                                                  [K0, KeyTxErr]);
-                      _ ->
-                          bitcask_nifs:keydir_remove(LiveKeyDir, K, Tstamp,
+                      {K1, _KeyMeta = #keymeta{}} ->
+                          bitcask_nifs:keydir_remove(LiveKeyDir, K1, Tstamp,
                                                      FileId, Offset)
                   end,
                   Acc
