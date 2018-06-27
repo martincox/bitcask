@@ -429,7 +429,7 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                                                      Acc;
                                                  {_, false} ->
                                                      case bitcask_nifs:keydir_get(
-                                                            State#bc_state.keydir, K,
+                                                            State#bc_state.keydir, K1,
                                                             FoldEpoch) of
                                                          not_found ->
                                                              Acc;
@@ -443,13 +443,13 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                                                                  false ->
                                                                      Acc;
                                                                  true when SeeTombstonesP ->
-                                                                     Fun({tombstone, K},V,Acc);
+                                                                     Fun({tombstone, K1},V,Acc);
                                                                  true when not SeeTombstonesP ->
                                                                      case is_tombstone(V) of
                                                                          true ->
                                                                              Acc;
                                                                          false ->
-                                                                             Fun(K,V,Acc)
+                                                                             Fun(K1,V,Acc)
                                                                      end
                                                              end
                                                      end
@@ -1186,7 +1186,7 @@ put_state(Ref, State) ->
     erlang:put(Ref, State).
 
 kt_id(Key) when is_binary(Key) ->
-    Key.
+    {Key, #keymeta{}}.
 
 scan_key_files([], _KeyDir, Acc, _CloseFile, _KT) ->
     Acc;
