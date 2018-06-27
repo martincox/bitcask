@@ -1,3 +1,6 @@
+-define(DEFAULT_TSTAMP_EXPIRE, 2147483647).
+
+-record(keymeta, { tstamp_expire = ?DEFAULT_TSTAMP_EXPIRE :: integer() }).
 
 -record(bitcask_entry, { key :: binary(),
                          file_id :: integer(),
@@ -62,8 +65,3 @@
 -define(CHUNK_SIZE, 65535).
 -define(MIN_CHUNK_SIZE, 1024).
 -define(MAX_CHUNK_SIZE, 134217728).
-
--define(DEFAULT_TSTAMP_EXPIRE, 2147483647).
-
--record(keymeta, { tstamp_expire = ?DEFAULT_TSTAMP_EXPIRE :: integer() }).
-
