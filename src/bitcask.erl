@@ -403,58 +403,63 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
     KT = State#bc_state.key_transform,
     FrozenFun =
         fun() ->
-                case open_fold_files(State#bc_state.dirname,
-                                     State#bc_state.keydir,
-                                     ?OPEN_FOLD_RETRIES) of
-                    {ok, Files, FoldEpoch} ->
-                        ExpiryTime = expiry_time(State#bc_state.opts),
-                        SubFun = fun(K0,V,TStamp,{_FN,FTS,Offset,_Sz},Acc) ->
-                                         Now = bitcask_time:tstamp(),
-                                         {K, KeyMeta = #keymeta{}} = try
-                                                 KT(K0)
-                                             catch
-                                                 KeyTxErr ->
-                                                     {key_tx_error, {K0, KeyTxErr}}
-                                             end,
-                                         case {K, (TStamp < ExpiryTime orelse 
-                                                   KeyMeta#keymeta.tstamp_expire < Now)} of
-                                             {{key_tx_error, TxErr}, _} ->
-                                                 error_logger:error_msg("Error converting key ~p: ~p", [K0, TxErr]),
-                                                 Acc;
-                                             {_, true} ->
-                                                 Acc;
-                                             {_, false} ->
-                                                 case bitcask_nifs:keydir_get(
-                                                        State#bc_state.keydir, K,
-                                                        FoldEpoch) of
-                                                     not_found ->
-                                                         Acc;
-                                                     E when is_record(E, bitcask_entry) ->
-                                                         case
-                                                             Offset =:= E#bitcask_entry.offset
-                                                             andalso
-                                                             TStamp =:= E#bitcask_entry.tstamp
-                                                             andalso
-                                                             FTS =:= E#bitcask_entry.file_id of
-                                                             false ->
-                                                                 Acc;
-                                                             true when SeeTombstonesP ->
-                                                                 Fun({tombstone, K},V,Acc);
-                                                             true when not SeeTombstonesP ->
-                                                                 case is_tombstone(V) of
-                                                                     true ->
-                                                                         Acc;
-                                                                     false ->
-                                                                         Fun(K,V,Acc)
-                                                                 end
-                                                         end
-                                                 end
-                                         end
-                                 end,
-                        subfold(SubFun,Files,Acc0);
-                    {error, Reason} ->
-                        {error, Reason}
-                end
+            case open_fold_files(State#bc_state.dirname,
+                                 State#bc_state.keydir,
+                                 ?OPEN_FOLD_RETRIES) of
+                {ok, Files, FoldEpoch} ->
+                    ExpiryTime = expiry_time(State#bc_state.opts),
+                    SubFun = fun(K0,V,TStamp,{_FN,FTS,Offset,_Sz},Acc) ->
+                                     Now = bitcask_time:tstamp(),
+                                     K = try
+                                             KT(K0)
+                                         catch
+                                             KeyTxErr0 ->
+                                                 {key_tx_error, {K0, KeyTxErr0}}
+                                         end,
+
+                                     case K of
+                                         {key_tx_error, KeyTxErr1} ->
+                                             error_logger:error_msg("Error converting key ~p: ~p", 
+                                                                    [K0, KeyTxErr1]),
+                                             Acc;
+                                         {K1, KeyMeta = #keymeta{}} ->
+                                             case {K1, (TStamp < ExpiryTime orelse 
+                                                       KeyMeta#keymeta.tstamp_expire < Now)} of
+                                                 {_, true} ->
+                                                     Acc;
+                                                 {_, false} ->
+                                                     case bitcask_nifs:keydir_get(
+                                                            State#bc_state.keydir, K,
+                                                            FoldEpoch) of
+                                                         not_found ->
+                                                             Acc;
+                                                         E when is_record(E, bitcask_entry) ->
+                                                             case
+                                                                 Offset =:= E#bitcask_entry.offset
+                                                                 andalso
+                                                                 TStamp =:= E#bitcask_entry.tstamp
+                                                                 andalso
+                                                                 FTS =:= E#bitcask_entry.file_id of
+                                                                 false ->
+                                                                     Acc;
+                                                                 true when SeeTombstonesP ->
+                                                                     Fun({tombstone, K},V,Acc);
+                                                                 true when not SeeTombstonesP ->
+                                                                     case is_tombstone(V) of
+                                                                         true ->
+                                                                             Acc;
+                                                                         false ->
+                                                                             Fun(K,V,Acc)
+                                                                     end
+                                                             end
+                                                     end
+                                             end
+                                     end
+                             end,
+                    subfold(SubFun,Files,Acc0);
+                {error, Reason} ->
+                    {error, Reason}
+            end
         end,
     KeyDir = State#bc_state.keydir,
     bitcask_nifs:keydir_frozen(KeyDir, FrozenFun, MaxAge, MaxPut).
