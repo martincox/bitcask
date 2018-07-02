@@ -240,7 +240,7 @@ get(Ref, Key, TryNum) ->
             not_found;
         E when is_record(E, bitcask_entry) ->
             case E#bitcask_entry.tstamp < expiry_time(State#bc_state.opts) orelse
-                 E#bitcask_entry.tstamp_expire < bitcask_time:tstamp() of
+                 is_key_expired(E#bitcask_entry.tstamp_expire) of
                 true ->
                     %% Expired entry; remove from keydir
                     case bitcask_nifs:keydir_remove(State#bc_state.keydir, Key,
@@ -353,8 +353,8 @@ fold_keys(Ref, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
     ExpiryTime = expiry_time((get_state(Ref))#bc_state.opts),
     RealFun = fun(BCEntry, Acc) ->
         Key = BCEntry#bitcask_entry.key,
-        case BCEntry#bitcask_entry.tstamp < ExpiryTime orelse
-             BCEntry#bitcask_entry.tstamp_expire < bitcask_time:tstamp() of
+        case BCEntry#bitcask_entry.tstamp < ExpiryTime orelse 
+             is_key_expired(BCEntry#bitcask_entry.tstamp_expire) of
             true ->
                 Acc;
             false ->
@@ -409,7 +409,6 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                 {ok, Files, FoldEpoch} ->
                     ExpiryTime = expiry_time(State#bc_state.opts),
                     SubFun = fun(K0,V,TStamp,{_FN,FTS,Offset,_Sz},Acc) ->
-                                     Now = bitcask_time:tstamp(),
                                      K = try
                                              KT(K0)
                                          catch
@@ -424,7 +423,7 @@ fold(State, Fun, Acc0, MaxAge, MaxPut, SeeTombstonesP) ->
                                              Acc;
                                          {K1, KeyMeta = #keymeta{}} ->
                                              case {K1, (TStamp < ExpiryTime orelse 
-                                                       KeyMeta#keymeta.tstamp_expire < Now)} of
+                                                is_key_expired(KeyMeta#keymeta.tstamp_expire))} of
                                                  {_, true} ->
                                                      Acc;
                                                  {_, false} ->
@@ -1403,7 +1402,8 @@ merge_files(#mstate {  dirname = Dirname,
                                                [K0, TxErr]),
                         State0;
                     {K1, KeyMeta = #keymeta{}} ->
-                        merge_single_entry(K1, V, Tstamp, KeyMeta#keymeta.tstamp_expire, FileId, Pos, State0)
+                        merge_single_entry(K1, V, Tstamp, KeyMeta#keymeta.tstamp_expire, 
+                                           FileId, Pos, State0)
                 end
         end,
     State2 = try bitcask_fileops:fold(File, F, State) of
@@ -1419,8 +1419,8 @@ merge_files(#mstate {  dirname = Dirname,
     merge_files(State2#mstate { input_files = Rest }).
 
 merge_single_entry(K, V, Tstamp, TstampExpire, FileId, {_, _, Offset, _} = Pos, State) ->
-    case out_of_date(State, K, Tstamp, TstampExpire, FileId, Pos, State#mstate.expiry_time, 
-                     bitcask_time:tstamp(), false,
+    case out_of_date(State, K, Tstamp, is_key_expired(TstampExpire), FileId, Pos, State#mstate.expiry_time, 
+                     false,
                      [State#mstate.live_keydir, State#mstate.del_keydir]) of
         true ->
             %% Value in keydir is newer, so drop ... except! ...
@@ -1628,7 +1628,7 @@ inner_merge_write(K, V, Tstamp, TstampExpire, OldFileId, OldOffset, State) ->
     State1#mstate { out_file = Outfile2 }.
 
 
-out_of_date(_State, _Key, _Tstamp, _TstampExpire, _FileId, _Pos, _ExpiryTime, _Now,
+out_of_date(_State, _Key, _Tstamp, _IsKeyExpired, _FileId, _Pos, _ExpiryTime,
             EverFound, []) ->
     %% if we ever found it, and none of the entries were out of date,
     %% then it's not out of date
@@ -1636,15 +1636,15 @@ out_of_date(_State, _Key, _Tstamp, _TstampExpire, _FileId, _Pos, _ExpiryTime, _N
         true -> false;
         false -> not_found
     end;
-out_of_date(_State, _Key, Tstamp, TstampExpire, _FileId, _Pos, ExpiryTime, Now,
+out_of_date(_State, _Key, Tstamp, IsKeyExpired, _FileId, _Pos, ExpiryTime,
             _EverFound, _KeyDirs)
-  when Tstamp < ExpiryTime orelse TstampExpire < Now ->
+  when Tstamp < ExpiryTime orelse IsKeyExpired ->
     expired;
-out_of_date(State, Key, Tstamp, TstampExpire, FileId, {_,_,Offset,_} = Pos,
-            ExpiryTime, Now, EverFound, [KeyDir|Rest]) ->
+out_of_date(State, Key, Tstamp, IsKeyExpired, FileId, {_,_,Offset,_} = Pos,
+            ExpiryTime, EverFound, [KeyDir|Rest]) ->
     case bitcask_nifs:keydir_get(KeyDir, Key) of
         not_found ->
-            out_of_date(State, Key, Tstamp, TstampExpire, FileId, Pos, ExpiryTime, Now,
+            out_of_date(State, Key, Tstamp, IsKeyExpired, FileId, Pos, ExpiryTime,
                         EverFound, Rest);
 
         E when is_record(E, bitcask_entry) ->
@@ -1667,8 +1667,8 @@ out_of_date(State, Key, Tstamp, TstampExpire, FileId, {_,_,Offset,_} = Pos,
                                     true;
                                 false ->
                                     out_of_date(
-                                      State, Key, Tstamp, TstampExpire, FileId, Pos,
-                                      ExpiryTime, Now, true, Rest)
+                                      State, Key, Tstamp, IsKeyExpired, FileId, Pos,
+                                      ExpiryTime, true, Rest)
                             end;
 
                         true ->
@@ -1686,14 +1686,14 @@ out_of_date(State, Key, Tstamp, TstampExpire, FileId, {_,_,Offset,_} = Pos,
                             %% Thus, we are NOT out of date. Check the
                             %% rest of the keydirs to ensure this
                             %% holds true.
-                            out_of_date(State, Key, Tstamp, TstampExpire, FileId, Pos,
-                                        ExpiryTime, Now, true, Rest)
+                            out_of_date(State, Key, Tstamp, IsKeyExpired, FileId, Pos,
+                                        ExpiryTime, true, Rest)
                     end;
 
                 E#bitcask_entry.tstamp < Tstamp ->
                     %% Not out of date -- check rest of the keydirs
-                    out_of_date(State, Key, Tstamp, TstampExpire, FileId, Pos,
-                                ExpiryTime, Now, true, Rest);
+                    out_of_date(State, Key, Tstamp, IsKeyExpired, FileId, Pos,
+                                ExpiryTime, true, Rest);
 
                 true ->
                     %% Out of date!
@@ -2012,6 +2012,14 @@ get_key_transform(KT)
     KT;
 get_key_transform(_State) ->
     fun kt_id/1.
+
+is_key_expired(0) -> false;
+is_key_expired(ExpireTstamp) ->
+    Now = bitcask_time:tstamp(),
+    do_key_expired(ExpireTstamp, Now).
+
+do_key_expired(ExpireTstamp, Now) when ExpireTstamp < Now -> true;
+do_key_expired(_ExpireTstamp, _Now) -> false.
 
 -ifdef(TEST).
 error_msg_perhaps(_Fmt, _Args) ->

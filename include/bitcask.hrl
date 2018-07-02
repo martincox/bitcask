@@ -1,4 +1,4 @@
--define(DEFAULT_TSTAMP_EXPIRE, 2147483647).
+-define(DEFAULT_TSTAMP_EXPIRE, 0).
 
 -record(keymeta, { tstamp_expire = ?DEFAULT_TSTAMP_EXPIRE :: integer() }).
 
