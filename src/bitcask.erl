@@ -1402,7 +1402,7 @@ merge_files(#mstate {  dirname = Dirname,
                                                [K0, TxErr]),
                         State0;
                     {K1, KeyMeta = #keymeta{}} ->
-                        merge_single_entry(K, K1, V, Tstamp, KeyMeta#keymeta.tstamp_expire,
+                        merge_single_entry(K1, K0, V, Tstamp, KeyMeta#keymeta.tstamp_expire,
                                            FileId, Pos, State0)
                 end
         end,
