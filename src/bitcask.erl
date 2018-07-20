@@ -751,12 +751,15 @@ merge1(Dirname, Opts, FilesToMerge0, ExpiredFiles) ->
     ok = bitcask_lockops:release(Lock).
 
 %% @doc Predicate which determines whether or not a file should be considered for a merge.
-consider_for_merge(FragTrigger, DeadBytesTrigger, ExpirationGraceTime) ->
+consider_for_merge(FragTrigger, DeadBytesTrigger, ExpirationGraceTime, AbsoluteExpireTime) ->
     fun (F) ->
             (F#file_status.fragmented >= FragTrigger)
                 orelse (F#file_status.dead_bytes >= DeadBytesTrigger)
                 orelse ((F#file_status.oldest_tstamp > 0) andalso   %% means that the file has data
                         (F#file_status.newest_tstamp < ExpirationGraceTime)
+                       )
+                orelse ((F#file_status.oldest_tstamp_expire =/= ?DEFAULT_TSTAMP_EXPIRE) andalso
+                        (F#file_status.oldest_tstamp_expire < AbsoluteExpireTime)
                        )
     end.
 
@@ -926,8 +929,9 @@ run_merge_triggers(State, Summary) ->
             max(expiry_time(State#bc_state.opts), 0),
     ExpirationGraceTime =
             max(expiry_time(State#bc_state.opts) - expiry_grace_time(State#bc_state.opts), 0),
+    AbsoluteExpireTime = bitcask_time:tstamp(),
 
-    NeedsMerge = lists:any(consider_for_merge(FragTrigger, DeadBytesTrigger, ExpirationGraceTime),
+    NeedsMerge = lists:any(consider_for_merge(FragTrigger, DeadBytesTrigger, ExpirationGraceTime, AbsoluteExpireTime),
                            Summary),
     case NeedsMerge of
         true ->
@@ -942,7 +946,8 @@ run_merge_triggers(State, Summary) ->
             Thresholds = [frag_threshold(State#bc_state.opts),
                           dead_bytes_threshold(State#bc_state.opts),
                           small_file_threshold(State#bc_state.opts),
-                          expired_threshold(ExpirationTime)],
+                          expired_threshold(ExpirationTime),
+                          absolute_expire_threshold(AbsoluteExpireTime)],
 
             %% For each file, apply the threshold checks and return a list
             %% of failed threshold checks
@@ -1020,6 +1025,15 @@ expired_threshold(Cutoff) ->
     fun(F) ->
             if F#file_status.newest_tstamp < Cutoff  ->
                     [{data_expired, F#file_status.newest_tstamp, Cutoff}];
+               true ->
+                    []
+            end
+    end.
+
+absolute_expire_threshold(Cutoff) ->
+    fun(F) ->
+            if F#file_status.oldest_tstamp_expire < Cutoff  ->
+                    [{data_expired, F#file_status.oldest_tstamp_expire, Cutoff}];
                true ->
                     []
             end
@@ -1519,7 +1533,7 @@ merge_single_tombstone(KeyDirKey, BinKey, V, Tstamp, TstampExpire, FileId, Offse
                                                       Tstamp),
                             ok = bitcask_nifs:update_fstats(
                                    State#mstate.live_keydir,
-                                   OldFileId, Tstamp, TstampExpire,
+                                   OldFileId, Tstamp, 0,
                                    _LiveKeys = 0,
                                    _TotalKeysIncr = 0,
                                    _LiveIncr = 0,
@@ -1615,7 +1629,7 @@ inner_merge_write(KeyDirKey, BinKey, V, Tstamp, TstampExpire, OldFileId, OldOffs
                         ok = bitcask_nifs:update_fstats(
                                State1#mstate.live_keydir,
                                OutFileId,
-                               Tstamp, TstampExpire,
+                               Tstamp, 0,
                                0, 0, 0, Size,
                                _ShouldCreate = 1),
                         % Still not there, tombstone write is cool
@@ -1825,7 +1839,7 @@ do_put(KeyDirKey, BinKey, Value, TstampExpire, #bc_state{write_file = WriteFile}
                             ok = bitcask_nifs:update_fstats(
                                    State2#bc_state.keydir,
                                    bitcask_fileops:file_tstamp(WriteFile2), Tstamp,
-                                   TstampExpire, 0, 0, 0, TSize, _ShouldCreate = 1),
+                                   0, 0, 0, 0, TSize, _ShouldCreate = 1),
                             case bitcask_nifs:keydir_remove(State2#bc_state.keydir,
                                                             KeyDirKey, OldTstamp, 
                                                             OldFileId, OldOffset) of

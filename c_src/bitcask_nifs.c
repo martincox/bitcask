@@ -1666,7 +1666,7 @@ ERL_NIF_TERM bitcask_nifs_keydir_remove(ErlNifEnv* env, int argc, const ERL_NIF_
             }
 
             // Remove from file stats
-            update_fstats(env, keydir, fr.proxy.file_id, fr.proxy.tstamp, fr.proxy.tstamp_expire,
+            update_fstats(env, keydir, fr.proxy.file_id, fr.proxy.tstamp, 0,
                           MAX_EPOCH, -1, 0, -fr.proxy.total_sz, 0, 0);
 
             // If found an entry in the pending hash, convert it to a tombstone
