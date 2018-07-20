@@ -1094,7 +1094,7 @@ summary_info(Ref) ->
 %% Internal functions
 %% ===================================================================
 
-summarize(Dirname, {FileId, LiveCount, TotalCount, LiveBytes, TotalBytes, OldestTstamp, NewestTstamp, ExpirationEpoch}) ->
+summarize(Dirname, {FileId, LiveCount, TotalCount, LiveBytes, TotalBytes, OldestTstamp, NewestTstamp, ExpirationEpoch, OldestTstampExpire}) ->
     LiveRatio =
         case TotalCount > 0 of
             true ->
@@ -1108,7 +1108,8 @@ summarize(Dirname, {FileId, LiveCount, TotalCount, LiveBytes, TotalBytes, Oldest
                    total_bytes = TotalBytes,
                    oldest_tstamp = OldestTstamp,
                    newest_tstamp = NewestTstamp,
-                   expiration_epoch = ExpirationEpoch }.
+                   expiration_epoch = ExpirationEpoch,
+                   oldest_tstamp_expire = OldestTstampExpire }.
 
 expiry_time(Opts) ->
     ExpirySecs = get_opt(expiry_secs, Opts),
@@ -1518,7 +1519,7 @@ merge_single_tombstone(KeyDirKey, BinKey, V, Tstamp, TstampExpire, FileId, Offse
                                                       Tstamp),
                             ok = bitcask_nifs:update_fstats(
                                    State#mstate.live_keydir,
-                                   OldFileId, Tstamp,
+                                   OldFileId, Tstamp, TstampExpire,
                                    _LiveKeys = 0,
                                    _TotalKeysIncr = 0,
                                    _LiveIncr = 0,
@@ -1614,7 +1615,7 @@ inner_merge_write(KeyDirKey, BinKey, V, Tstamp, TstampExpire, OldFileId, OldOffs
                         ok = bitcask_nifs:update_fstats(
                                State1#mstate.live_keydir,
                                OutFileId,
-                               Tstamp,
+                               Tstamp, TstampExpire,
                                0, 0, 0, Size,
                                _ShouldCreate = 1),
                         % Still not there, tombstone write is cool
@@ -1824,10 +1825,10 @@ do_put(KeyDirKey, BinKey, Value, TstampExpire, #bc_state{write_file = WriteFile}
                             ok = bitcask_nifs:update_fstats(
                                    State2#bc_state.keydir,
                                    bitcask_fileops:file_tstamp(WriteFile2), Tstamp,
-                                   0, 0, 0, TSize, _ShouldCreate = 1),
+                                   TstampExpire, 0, 0, 0, TSize, _ShouldCreate = 1),
                             case bitcask_nifs:keydir_remove(State2#bc_state.keydir,
-                                                            KeyDirKey, OldTstamp, OldFileId,
-                                                            OldOffset) of
+                                                            KeyDirKey, OldTstamp, 
+                                                            OldFileId, OldOffset) of
                                 already_exists ->
                                     %% Merge updated the keydir after tombstone
                                     %% write.  beat us, so undo and retry in a

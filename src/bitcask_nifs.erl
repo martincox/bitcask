@@ -45,7 +45,7 @@
          increment_file_id/1,
          increment_file_id/2,
          keydir_trim_fstats/2,
-         update_fstats/8,
+         update_fstats/9,
          set_pending_delete/2,
          lock_acquire/2,
          lock_release/1,
@@ -349,10 +349,10 @@ keydir_release(_Ref) ->
 keydir_trim_fstats(_Ref, _IDList) ->
     erlang:nif_error({error, not_loaded}).
 
--spec update_fstats(reference(), non_neg_integer(), non_neg_integer(),
+-spec update_fstats(reference(), non_neg_integer(), non_neg_integer(), non_neg_integer(),
                     integer(), integer(), integer(), integer(), integer() ) ->
     ok.
-update_fstats(_Ref, _FileId, _Tstamp,
+update_fstats(_Ref, _FileId, _Tstamp, _TstampExpire,
               _LiveKeyIncr, _TotalKeyIncr,
               _LiveIncr, _TotalIncr, _ShouldCreate) ->
     erlang:nif_error({error, not_loaded}).
@@ -495,7 +495,7 @@ keydir_basic_test2() ->
     {ok, Ref} = keydir_new(),
     ok = keydir_put(Ref, <<"abc">>, 0, 1234, 0, 1, 0, bitcask_time:tstamp()),
 
-    {1, 3, [{0, 1, 1, 1234, 1234, 1, 1, _}],
+    {1, 3, [{0, 1, 1, 1234, 1234, 1, 1, _, _}],
      {0, 0, false, _},_} = keydir_info(Ref),
 
     E = keydir_get(Ref, <<"abc">>),
