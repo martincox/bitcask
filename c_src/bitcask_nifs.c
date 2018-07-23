@@ -641,12 +641,12 @@ ERL_NIF_TERM bitcask_nifs_update_fstats(ErlNifEnv* env, int argc, const ERL_NIF_
                 (void**)&handle)
             && enif_get_uint(env, argv[1], &file_id)
             && enif_get_uint(env, argv[2], &tstamp)
-            && enif_get_int(env, argv[3], &live_increment)
-            && enif_get_int(env, argv[4], &total_increment)
-            && enif_get_int(env, argv[5], &live_bytes_increment)
-            && enif_get_int(env, argv[6], &total_bytes_increment)
-            && enif_get_int(env, argv[7], &should_create)
-            && enif_get_int(env, argv[8], &tstamp_expire))
+            && enif_get_uint(env, argv[3], &tstamp_expire)
+            && enif_get_int(env, argv[4], &live_increment)
+            && enif_get_int(env, argv[5], &total_increment)
+            && enif_get_int(env, argv[6], &live_bytes_increment)
+            && enif_get_int(env, argv[7], &total_bytes_increment)
+            && enif_get_int(env, argv[8], &should_create))
     {
         LOCK(handle->keydir);
         update_fstats(env, handle->keydir, file_id, tstamp, tstamp_expire, MAX_EPOCH,

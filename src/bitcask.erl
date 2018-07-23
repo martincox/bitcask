@@ -922,6 +922,8 @@ run_merge_triggers(State, Summary) ->
     %% dead_bytes_merge_trigger - Any file has more than this # of dead bytes
     %% expiry_time - Any file has an expired key
     %% expiry_grace_time - avoid expiring in the case of continuous writes
+    %% absolute_expire_time - Any file with a key that has expired according to
+    %% and absolute expire tstamp.
     %%
     FragTrigger = get_opt(frag_merge_trigger, State#bc_state.opts),
     DeadBytesTrigger = get_opt(dead_bytes_merge_trigger, State#bc_state.opts),
@@ -1032,7 +1034,8 @@ expired_threshold(Cutoff) ->
 
 absolute_expire_threshold(Cutoff) ->
     fun(F) ->
-            if F#file_status.oldest_tstamp_expire < Cutoff  ->
+            if F#file_status.oldest_tstamp_expire =/= ?DEFAULT_TSTAMP_EXPIRE andalso
+               F#file_status.oldest_tstamp_expire < Cutoff  ->
                     [{data_expired, F#file_status.oldest_tstamp_expire, Cutoff}];
                true ->
                     []
@@ -1533,7 +1536,7 @@ merge_single_tombstone(KeyDirKey, BinKey, V, Tstamp, TstampExpire, FileId, Offse
                                                       Tstamp),
                             ok = bitcask_nifs:update_fstats(
                                    State#mstate.live_keydir,
-                                   OldFileId, Tstamp, 0,
+                                   OldFileId, Tstamp, TstampExpire,
                                    _LiveKeys = 0,
                                    _TotalKeysIncr = 0,
                                    _LiveIncr = 0,
@@ -1629,7 +1632,7 @@ inner_merge_write(KeyDirKey, BinKey, V, Tstamp, TstampExpire, OldFileId, OldOffs
                         ok = bitcask_nifs:update_fstats(
                                State1#mstate.live_keydir,
                                OutFileId,
-                               Tstamp, 0,
+                               Tstamp, TstampExpire,
                                0, 0, 0, Size,
                                _ShouldCreate = 1),
                         % Still not there, tombstone write is cool
@@ -1839,7 +1842,7 @@ do_put(KeyDirKey, BinKey, Value, TstampExpire, #bc_state{write_file = WriteFile}
                             ok = bitcask_nifs:update_fstats(
                                    State2#bc_state.keydir,
                                    bitcask_fileops:file_tstamp(WriteFile2), Tstamp,
-                                   0, 0, 0, 0, TSize, _ShouldCreate = 1),
+                                   TstampExpire, 0, 0, 0, TSize, _ShouldCreate = 1),
                             case bitcask_nifs:keydir_remove(State2#bc_state.keydir,
                                                             KeyDirKey, OldTstamp, 
                                                             OldFileId, OldOffset) of
@@ -3732,4 +3735,23 @@ make_merge_file(Dir, Seed, Probability) ->
             ok
     end.
 
+expired_key_test() ->
+    Dir = "/tmp/bc.expired.key",
+    os:cmd(?FMT("rm -rf ~s", [Dir])),
+    Now = bitcask_time:tstamp() + 5,
+    KT = fun(<<TstampExpire:32/integer, K/binary>>) -> 
+                 {K, #keymeta{tstamp_expire = TstampExpire}} 
+         end,
+    Opts = [{key_transform, KT}, {max_fold_age, -1}],
+    B = bitcask:open(Dir, [read_write] ++ Opts),
+    KVs = [{<<Now:32/integer, N:32>>, <<0:100/integer-unit:8>>} || N <- lists:seq(1,5)],
+    lists:foreach(
+        fun({K, V}) -> 
+            {K1, Meta} = KT(K),
+            bitcask:put(B, K1, K, V, Meta#keymeta.tstamp_expire)
+        end, KVs),
+    ?assertEqual(length(KVs), length(bitcask:list_keys(B))),
+    timer:sleep(10),
+    ?assertEqual(5, length(bitcask:list_keys(B))).
+    
 -endif.
